@@ -1,0 +1,8 @@
+{
+  "id": "superlite-for-agents",
+  "version": "0.5.0",
+  "apiVersion": 2,
+  "main": "main.js",
+  "depends": ["slcode-plugin"],
+  "renderer": "renderer.js"
+}

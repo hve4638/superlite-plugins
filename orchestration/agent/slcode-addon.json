@@ -1,0 +1,8 @@
+{
+  "name": "orchestration",
+  "version": "0.5.1",
+  "addon": { "base": "superlite", "version": ">=0.4.0" },
+  "parts": {
+    "orch": { "when": { "part": { "main": true }, "env": { "SUPERLITE_SOCK": true } } }
+  }
+}

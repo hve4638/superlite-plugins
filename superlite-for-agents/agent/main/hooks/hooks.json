@@ -1,0 +1,67 @@
+{
+  "hooks": [
+    {
+      "type": "command",
+      "event": "SessionStart",
+      "command": "[ \"${slcode.vars.harness}\" = claude ] || exit 0; if [ -n \"$SUPERLITE_SOCK\" ] && command -v superlite >/dev/null 2>&1; then superlite agent-event --agent claude; fi; exit 0",
+      "timeout": 5,
+      "compat": "claude"
+    },
+    {
+      "type": "command",
+      "event": "SessionStart",
+      "command": "if [ -n \"$SUPERLITE_SOCK\" ] && command -v superlite >/dev/null 2>&1; then superlite agents.md --brief; fi; exit 0",
+      "timeout": 5,
+      "compat": "claude"
+    },
+    {
+      "type": "command",
+      "event": "UserPromptSubmit",
+      "command": "[ \"${slcode.vars.harness}\" = claude ] || exit 0; if [ -n \"$SUPERLITE_SOCK\" ] && command -v superlite >/dev/null 2>&1; then superlite agent-event --agent claude; fi; exit 0",
+      "timeout": 5,
+      "compat": "claude"
+    },
+    {
+      "type": "command",
+      "event": "PreToolUse",
+      "command": "[ \"${slcode.vars.harness}\" = claude ] || exit 0; if [ -n \"$SUPERLITE_SOCK\" ] && command -v superlite >/dev/null 2>&1; then superlite agent-event --agent claude; fi; exit 0",
+      "timeout": 5,
+      "compat": "claude"
+    },
+    {
+      "type": "command",
+      "event": "PostToolUse",
+      "command": "[ \"${slcode.vars.harness}\" = claude ] || exit 0; if [ -n \"$SUPERLITE_SOCK\" ] && command -v superlite >/dev/null 2>&1; then superlite agent-event --agent claude; fi; exit 0",
+      "timeout": 5,
+      "compat": "claude"
+    },
+    {
+      "type": "command",
+      "event": "PermissionRequest",
+      "command": "[ \"${slcode.vars.harness}\" = claude ] || exit 0; if [ -n \"$SUPERLITE_SOCK\" ] && command -v superlite >/dev/null 2>&1; then superlite agent-event --agent claude; fi; exit 0",
+      "timeout": 5,
+      "compat": "claude"
+    },
+    {
+      "type": "command",
+      "event": "Notification",
+      "command": "[ \"${slcode.vars.harness}\" = claude ] || exit 0; if [ -n \"$SUPERLITE_SOCK\" ] && command -v superlite >/dev/null 2>&1; then superlite agent-event --agent claude; fi; exit 0",
+      "timeout": 5,
+      "compat": "claude"
+    },
+    {
+      "type": "command",
+      "event": "Stop",
+      "command": "[ \"${slcode.vars.harness}\" = claude ] || exit 0; if [ -n \"$SUPERLITE_SOCK\" ] && command -v superlite >/dev/null 2>&1; then superlite agent-event --agent claude; fi; exit 0",
+      "timeout": 5,
+      "compat": "claude"
+    },
+    {
+      "type": "command",
+      "event": "SessionEnd",
+      "command": "[ \"${slcode.vars.harness}\" = claude ] || exit 0; if [ -n \"$SUPERLITE_SOCK\" ] && command -v superlite >/dev/null 2>&1; then superlite agent-event --agent claude; fi; exit 0",
+      "timeout": 5,
+      "compat": "claude"
+    }
+  ]
+}

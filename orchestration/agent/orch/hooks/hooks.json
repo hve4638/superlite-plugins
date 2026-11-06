@@ -1,0 +1,5 @@
+{
+  "hooks": [
+    { "type": "script", "file": "hooks/guide.ts" }
+  ]
+}

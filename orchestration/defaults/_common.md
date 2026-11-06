@@ -1,0 +1,2 @@
+- ticket 문서는 `ruleof ticket`, milestone 문서는 `ruleof milestone` 출력의 형식과 완료 절차를 따른다.
+- 결정이 필요한 일과 사용자의 의도 확인은 이 세션에서 사용자에게 직접 묻는다.
