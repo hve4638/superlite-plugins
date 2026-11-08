@@ -9,7 +9,7 @@
     { "id": "sidebar", "entry": "views/sidebar.js", "title": "Orchestration", "icon": "organization" }
   ],
   "depends": ["superlite-for-agents", "slcode-plugin", "slcode"],
-  "env": ["SLCODE_SESSION_ID"],
+  "env": ["SLCODE_SESSION_ID", "TICKET_PATH"],
   "verbs": [
     {
       "name": "orchestrate.new",
@@ -57,6 +57,98 @@
         { "name": "abandon", "kind": "option", "value": "key", "help": "discard unmerged work and remove this workspace (key from a refused --close)" },
         { "name": "message", "kind": "option", "help": "commit message for --submit" }
       ]
+    },
+    {
+      "name": "ticket",
+      "visibility": "advertise",
+      "description": "Ticket and milestone store for orchestration. Run `superlite ticket --help` for subcommands.",
+      "help": "Ticket commands: new, ls, show, set, edit, log, done, drop, milestone, root. superlite ticket lists them with one line each; superlite ticket <command> --help explains its arguments"
+    },
+    {
+      "name": "ticket.new",
+      "visibility": "hidden",
+      "help": "Create a ticket and print its id",
+      "args": [
+        { "name": "lane", "kind": "option" },
+        { "name": "priority", "kind": "option", "help": "critical | high | normal (default) | low" },
+        { "name": "depends", "kind": "option", "value": "id,id", "help": "tickets this one waits for" },
+        { "name": "repos", "kind": "option", "value": "repo,repo" },
+        { "name": "milestone", "kind": "option", "value": "id", "help": "attach it to this milestone" },
+        { "name": "todo", "kind": "option", "value": "text", "help": "what to implement, short enough to reuse in a commit message" },
+        { "name": "reason", "kind": "option", "value": "text", "help": "why, the chosen direction and dropped alternatives" },
+        { "name": "title", "kind": "rest", "required": true, "help": "title" }
+      ]
+    },
+    {
+      "name": "ticket.ls",
+      "visibility": "hidden",
+      "help": "List tickets (unfinished ones unless --status says otherwise)",
+      "args": [
+        { "name": "status", "kind": "option", "value": "s", "help": "open | active | hold | done | dropped, comma-separated, or all" },
+        { "name": "lane", "kind": "option" },
+        { "name": "assignee", "kind": "option", "value": "branch", "help": "branch of the worker" },
+        { "name": "milestone", "kind": "option", "value": "id", "help": "tickets in this milestone, with what they depend on" }
+      ]
+    },
+    {
+      "name": "ticket.show",
+      "visibility": "hidden",
+      "help": "Show a ticket: fields, todo, reason, log, dependencies and the commits with its Ticket: trailer",
+      "args": [{ "name": "id", "kind": "positional", "required": true, "help": "ticket id" }]
+    },
+    {
+      "name": "ticket.set",
+      "visibility": "hidden",
+      "help": "Change a ticket: title= status= priority= lane=, assignee+= depends+= repo+= (or -=); --todo and --reason replace the text",
+      "args": [
+        { "name": "id", "kind": "positional", "required": true, "help": "ticket id" },
+        { "name": "changes", "kind": "positional", "variadic": true, "help": "key=value, key+=a,b or key-=a,b" },
+        { "name": "todo", "kind": "option", "value": "text", "help": "new todo text" },
+        { "name": "reason", "kind": "option", "value": "text", "help": "new reason text" }
+      ]
+    },
+    {
+      "name": "ticket.edit",
+      "visibility": "hidden",
+      "help": "Open the ticket's title, todo and reason as markdown in the editor; each save updates the ticket",
+      "args": [{ "name": "id", "kind": "positional", "required": true, "help": "ticket id" }]
+    },
+    {
+      "name": "ticket.log",
+      "visibility": "hidden",
+      "help": "Add a progress line to a ticket, signed with this folder's branch",
+      "args": [
+        { "name": "id", "kind": "positional", "required": true, "help": "ticket id" },
+        { "name": "text", "kind": "rest", "required": true, "help": "the line" }
+      ]
+    },
+    {
+      "name": "ticket.done",
+      "visibility": "hidden",
+      "help": "Mark a ticket done; a ticket in no milestone joins the next open milestone",
+      "args": [{ "name": "id", "kind": "positional", "required": true, "help": "ticket id" }]
+    },
+    {
+      "name": "ticket.drop",
+      "visibility": "hidden",
+      "help": "Mark a ticket dropped",
+      "args": [{ "name": "id", "kind": "positional", "required": true, "help": "ticket id" }]
+    },
+    {
+      "name": "ticket.milestone",
+      "visibility": "hidden",
+      "help": "Milestones: new <title> --order <n> [--goal <text>] | ls | show <id> | add <id> <ticket...> | remove <id> <ticket...> | release <id>",
+      "args": [
+        { "name": "action", "kind": "positional", "required": true, "help": "new | ls | show | add | remove | release" },
+        { "name": "args", "kind": "positional", "variadic": true },
+        { "name": "order", "kind": "option", "value": "n", "help": "for new: lower comes first, unique" },
+        { "name": "goal", "kind": "option", "value": "text", "help": "for new: what this milestone is for" }
+      ]
+    },
+    {
+      "name": "ticket.root",
+      "visibility": "hidden",
+      "help": "Print the ticket DB this folder uses and where that came from (TICKET_PATH or a .ticket file)"
     }
   ],
   "settings": {
