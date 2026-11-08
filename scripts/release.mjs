@@ -1,19 +1,25 @@
 #!/usr/bin/env node
 // 판 올리기 (ticket plugins-release-previous) — marketplace.json 의 한 줄을 새 판으로 바꾸며 직전 판을 previous 맨 앞에 옮기고,
 // path 줄의 판 커밋에 로컬 태그 <id>-v<version> 을 붙이고, previous 가 가리키는 태그·plugin.json 을 점검한다. 의존성 없음. 도움말: --help
-// 목록 줄과 plugin.json 의 대조 규칙은 relay 의 market.rs mismatch 와 같다 (id·version 같음, depends 는 순서 무관)
+// 목록 줄과 plugin.json 의 대조 규칙은 relay 의 market.rs mismatch 와 같다 (id·version 같음, depends 는 순서 무관·공백 무시)
+// depends 의 범위(ticket plugins-release-depends-range): bump 는 새 판이 다른 줄의 범위를 깨면 거부하고, check 는 줄마다 범위가 목록의 판을
+// 받는지와 범위를 적은 판의 minSuperlite 를 본다
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 const LIST = 'marketplace.json';
+// depends 범위를 읽는 첫 superlite (master 통지 2026-11-08 — 바뀌면 master 가 알린다). 그 전 판은 범위를 적은 의존을 찾지 못한다
+const RANGE_MIN_SUPERLITE = '0.22.0';
 
 const HELP = `node scripts/release.mjs <명령> [인자]
 
 명령
   bump <id>    marketplace.json 의 <id> 줄을 새 판으로 바꾼다. 올리기 전 줄의 version·minSuperlite·depends 를
                previous 맨 앞에 옮긴다. 작업 트리의 marketplace.json 만 고치고 커밋·태그는 하지 않는다.
+               새 판이 목록의 다른 줄 depends 범위를 깨면 거부한다: 의존하는 쪽을 먼저 올린다 (같은 커밋에 넣는다).
+               새 depends 에 범위가 있으면 minSuperlite 가 ${RANGE_MIN_SUPERLITE} 이상이어야 한다.
                path 줄: 새 판의 version·depends 는 <path>/plugin.json 에서 읽는다. previous 의 ref 는
                         <id>-v<직전 version> 이고, 그 태그가 로컬에 있어야 한다.
                source 줄: --source <저장소@ref> 와 --version 이 필요하다. previous 의 ref 는 기존 source 의 @ref.
@@ -30,12 +36,14 @@ const HELP = `node scripts/release.mjs <명령> [인자]
   check        작업 트리의 marketplace.json 을 점검한다. path 줄마다 plugin.json 과 목록 줄, 있으면 <id>-v<version>
                태그 시점의 plugin.json, previous 마다 ref(태그나 40자 커밋)가 로컬에 있는지와 그 시점
                plugin.json 의 version·depends 를 본다. source 줄의 previous 는 다른 저장소라 보지 않는다.
+               줄마다 depends 항목의 꼴, 범위가 목록에 있는 의존의 version 을 받는지, 범위를 적은 판(previous 포함)의
+               minSuperlite 가 ${RANGE_MIN_SUPERLITE} 이상인지도 본다.
                문제가 있으면 종료 코드 1.
 
 판 올리기 순서 (path 줄)
   1. node scripts/release.mjs check          직전 판의 태그가 있는지 확인 (없으면 그 판 커밋에서 tag <id>)
   2. <path>/plugin.json 의 version(·depends)을 올린다
-  3. node scripts/release.mjs bump <id>
+  3. node scripts/release.mjs bump <id>     의존 판이 다른 줄의 범위를 깨면, 의존하는 쪽의 depends·version 을 올려 먼저 bump
   4. plugin.json·marketplace.json 을 함께 커밋한다
   5. node scripts/release.mjs tag <id>
   6. git push 와 git push origin <id>-v<version> 은 사람이 한다
@@ -72,6 +80,91 @@ function higher(a, b) {
   return false;
 }
 
+// ---- depends 범위 — code-superlight front/src/model/pluginVersion.ts 의 parseDep·satisfies 사본 (npm semver 범위의 부분집합).
+// 항목은 "id" 또는 "id<범위>", 범위는 공백으로 이은 ^ ~ >= > <= < = 비교식(연산자 없는 판은 = 이고 id 와 띄운다)이 모두 맞아야 한다
+
+function semver(v) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$/.exec(String(v ?? '').trim());
+  return m ? { nums: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] ? m[4].split('.') : [] } : null;
+}
+
+/** semver 2.0 우선순위 — 음수면 a 가 낮다 */
+function compare(a, b) {
+  for (let i = 0; i < 3; i++) if (a.nums[i] !== b.nums[i]) return a.nums[i] - b.nums[i];
+  if (a.pre.length === 0 || b.pre.length === 0) return b.pre.length - a.pre.length;
+  for (let i = 0; i < Math.max(a.pre.length, b.pre.length); i++) {
+    const x = a.pre[i];
+    const y = b.pre[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const nx = /^\d+$/.test(x);
+    const ny = /^\d+$/.test(y);
+    if (nx && ny && Number(x) !== Number(y)) return Number(x) - Number(y);
+    if (nx !== ny) return nx ? -1 : 1;
+    if (!nx && x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+/** 범위 → 비교식들. 꼴이 아니면 null (빈 범위는 []) */
+function comparators(range) {
+  const out = [];
+  for (const tok of range.trim().split(/\s+/).filter(Boolean)) {
+    const m = /^(\^|~|>=|<=|>|<|=)?(.*)$/.exec(tok);
+    const v = m ? semver(m[2]) : null;
+    if (m === null || v === null) return null;
+    const op = m[1] ?? '=';
+    if (op === '^' || op === '~') {
+      const [a, b, c] = v.nums;
+      const hi = op === '~' ? [a, b + 1, 0] : a > 0 ? [a + 1, 0, 0] : b > 0 ? [0, b + 1, 0] : [0, 0, c + 1];
+      out.push({ op: '>=', v }, { op: '<', v: { nums: hi, pre: ['0'] } });
+    } else out.push({ op, v });
+  }
+  return out;
+}
+
+/** depends 항목 → id·범위(빈 값 = 아무 판). 꼴이 아니면 null */
+function parseDep(s) {
+  const m = /^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(.*)$/.exec(String(s));
+  if (m === null) return null;
+  const rest = m[2].trim();
+  if (rest !== '' && /^[0-9v]/.test(rest) && !/^\s/.test(m[2])) return null;
+  if (comparators(rest) === null) return null;
+  return { id: m[1], range: rest.split(/\s+/).filter(Boolean).join(' ') };
+}
+
+/** 판이 범위에 맞는가 — 판을 읽지 못하면 맞지 않는다 */
+function satisfies(version, range) {
+  const cs = comparators(range);
+  const v = semver(version);
+  if (cs === null || v === null) return false;
+  if (v.pre.length > 0 && !cs.some((c) => c.v.pre.length > 0 && c.v.nums.every((n, i) => n === v.nums[i]))) return false;
+  return cs.every(({ op, v: w }) => {
+    const d = compare(v, w);
+    return op === '<' ? d < 0 : op === '<=' ? d <= 0 : op === '>' ? d > 0 : op === '>=' ? d >= 0 : d === 0;
+  });
+}
+
+/** 목록의 다른 줄 중 depends 범위가 <id> 의 판 version 을 받지 않는 항목들 ("줄id 의 depends 항목") */
+function breaks(list, id, version) {
+  const out = [];
+  for (const p of list.plugins) {
+    if (p.id === id) continue;
+    for (const d of p.depends ?? []) {
+      const dep = parseDep(d);
+      if (dep?.id === id && dep.range && !satisfies(version, dep.range)) out.push(`${p.id} 의 "${d}"`);
+    }
+  }
+  return out;
+}
+
+/** depends 에 범위가 있는데 minSuperlite 가 RANGE_MIN_SUPERLITE 보다 낮거나 없으면 사유 */
+function rangeTooOld(label, depends, min) {
+  if (!(depends ?? []).some((d) => parseDep(d)?.range)) return null;
+  if (numbers(min) && !higher(RANGE_MIN_SUPERLITE, min)) return null;
+  return `${label}: depends 에 범위가 있으니 minSuperlite 가 ${RANGE_MIN_SUPERLITE} 이상이어야 한다 (지금 ${min ?? '없음'})`;
+}
+
 /** 목록 줄(id·version·depends)과 plugin.json 이 어긋난 사유, 맞으면 null */
 function mismatch(id, version, depends, manifest) {
   let m;
@@ -82,8 +175,10 @@ function mismatch(id, version, depends, manifest) {
   }
   if (m.id !== id) return `목록의 id(${id}) 와 plugin.json 의 id(${m.id ?? ''}) 가 다르다`;
   if (m.version !== version) return `${id}: 목록의 version(${version}) 과 plugin.json 의 version(${m.version ?? ''}) 이 다르다`;
-  const had = (Array.isArray(m.depends) ? m.depends : []).filter((d) => typeof d === 'string').sort();
-  const want = [...(depends ?? [])].sort();
+  // 목록은 plugin.json 의 depends 를 그대로 옮겨 적는다 — 공백만 무시하고 범위까지 대조한다 (market.rs 의 norm)
+  const norm = (d) => d.replace(/\s+/g, '');
+  const had = (Array.isArray(m.depends) ? m.depends : []).filter((d) => typeof d === 'string').map(norm).sort();
+  const want = (depends ?? []).map(norm).sort();
   if (had.join('\0') !== want.join('\0')) return `${id}: 목록의 depends(${want.join(', ')}) 와 plugin.json 의 depends(${had.join(', ')}) 가 다르다`;
   return null;
 }
@@ -165,6 +260,13 @@ function bump(root, id, opts) {
     const why = mismatch(id, updated.version, updated.depends, fs.readFileSync(path.join(root, line.path, 'plugin.json'), 'utf8'));
     if (why) fail(why);
   }
+  const bad = (updated.depends ?? []).find((d) => parseDep(d) === null);
+  if (bad !== undefined) fail(`${id}: depends 항목 "${bad}" 의 꼴이 아니다 ("id" 또는 "id<범위>")`);
+  const old = rangeTooOld(`${id} ${updated.version}`, updated.depends, updated.minSuperlite);
+  if (old) fail(`${old} — --min-superlite ${RANGE_MIN_SUPERLITE} 을 준다`);
+  // 의존의 새 판이 다른 플러그인의 범위를 깨면 그 의존의 Update 가 막힌다 — 의존하는 쪽을 먼저 올려 같은 커밋에 넣게 한다
+  const broken = breaks(list, id, updated.version);
+  if (broken.length) fail(`${id} ${updated.version} 은 ${broken.join(', ')} 범위에 맞지 않는다 — 의존하는 쪽 depends·version 을 올려 먼저 bump 하고 같은 커밋에 넣는다`);
   list.plugins[i] = ordered(updated);
   fs.writeFileSync(file, render(list));
   process.stdout.write(`${id}: ${line.version} → ${next.version} (previous 맨 앞에 ${line.version} @ ${prevRef})\n`);
@@ -209,6 +311,19 @@ function check(root) {
   for (const p of list.plugins) {
     const previous = p.previous ?? [];
     for (const v of previous) if (!v.version || !v.ref) errors.push(`${p.id}: previous 에 version 이나 ref 가 빈 판이 있다`);
+    for (const d of p.depends ?? []) {
+      const dep = parseDep(d);
+      if (dep === null) {
+        errors.push(`${p.id}: depends 항목 "${d}" 의 꼴이 아니다 ("id" 또는 "id<범위>")`);
+        continue;
+      }
+      const target = dep.range && list.plugins.find((q) => q.id === dep.id);
+      if (target && !satisfies(target.version, dep.range)) errors.push(`${p.id}: depends "${d}" 가 목록의 ${dep.id} ${target.version} 을 받지 않는다`);
+    }
+    for (const v of [p, ...previous]) {
+      const old = rangeTooOld(`${p.id} ${v.version}`, v.depends ?? p.depends, v.minSuperlite);
+      if (old) errors.push(old);
+    }
     if (p.source) {
       if (!refOf(p.source)) errors.push(`${p.id}: source 에 @ref 가 없다 (${p.source})`);
       if (previous.length) notes.push(`${p.id}: source 줄의 previous 는 다른 저장소라 확인하지 않았다`);

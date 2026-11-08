@@ -205,3 +205,73 @@ test('check: previous 의 depends 가 그 시점 plugin.json 과 다르면 오�
   assert.equal(out.status, 1);
   assert.match(out.stdout, /b previous b-v0\.2\.0: b: 목록의 depends\(\) 와 plugin\.json 의 depends\(a\)/);
 });
+
+// ---- depends 범위 (ticket plugins-release-depends-range)
+
+/** b 가 범위로 a 에 의존하는 목록 — 범위를 적은 줄은 minSuperlite 0.22.0 */
+function ranged(range = 'a^0.1.0', min = '0.22.0') {
+  const t = repo();
+  const list = JSON.parse(LIST);
+  list.plugins[2] = { id: 'b', version: '0.2.0', path: 'b', minSuperlite: min, depends: [range] };
+  fs.writeFileSync(`${t.r}/marketplace.json`, `${JSON.stringify(list, null, 2)}\n`);
+  manifest(t.r, 'b', '0.2.0', [range]);
+  t.commit('b 범위');
+  t.run('tag');
+  return t;
+}
+
+test('check: depends 는 공백만 무시하고 범위까지 대조한다', () => {
+  const { r, run } = ranged('a >=0.1.0  <0.2.0');
+  manifest(r, 'b', '0.2.0', ['a>=0.1.0 <0.2.0']);
+  assert.equal(run('check').status, 0, run('check').stdout);
+  manifest(r, 'b', '0.2.0', ['a>=0.1.1']);
+  const out = run('check');
+  assert.equal(out.status, 1);
+  assert.match(out.stdout, /목록의 depends\(a>=0\.1\.0<0\.2\.0\) 와 plugin\.json 의 depends\(a>=0\.1\.1\)/);
+});
+
+test('bump: 의존의 새 판이 다른 줄의 범위를 깨면 거부하고, 의존하는 쪽을 먼저 올리면 통과한다', () => {
+  const { r, run, line, commit } = ranged();
+  const before = fs.readFileSync(`${r}/marketplace.json`, 'utf8');
+  manifest(r, 'a', '0.2.0');
+  const out = run('bump', 'a');
+  assert.equal(out.status, 1);
+  assert.match(out.stderr, /a 0\.2\.0 은 b 의 "a\^0\.1\.0" 범위에 맞지 않는다/);
+  assert.equal(fs.readFileSync(`${r}/marketplace.json`, 'utf8'), before);
+
+  manifest(r, 'b', '0.3.0', ['a^0.2.0']);
+  assert.equal(run('bump', 'b').status, 0);
+  const ok = run('bump', 'a');
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.deepEqual(line('b').depends, ['a^0.2.0']);
+  commit('a 0.2.0, b 0.3.0');
+  run('tag');
+  const checked = run('check');
+  assert.equal(checked.status, 0, checked.stdout);
+});
+
+test('check: 범위가 목록의 의존 판을 받지 않거나 항목 꼴이 아니면 오류', () => {
+  const { r, run } = ranged('a^0.2.0');
+  assert.match(run('check').stdout, /b: depends "a\^0\.2\.0" 가 목록의 a 0\.1\.0 을 받지 않는다/);
+  const list = JSON.parse(fs.readFileSync(`${r}/marketplace.json`, 'utf8'));
+  list.plugins[2].depends = ['a||0.1.0'];
+  fs.writeFileSync(`${r}/marketplace.json`, JSON.stringify(list));
+  const out = run('check');
+  assert.equal(out.status, 1);
+  assert.match(out.stdout, /b: depends 항목 "a\|\|0\.1\.0" 의 꼴이 아니다/);
+});
+
+test('check·bump: 범위를 적은 판의 minSuperlite 가 0.22.0 보다 낮으면 알린다', () => {
+  const { r, run } = ranged('a^0.1.0', '0.21.0');
+  const out = run('check');
+  assert.equal(out.status, 1);
+  assert.match(out.stdout, /b 0\.2\.0: depends 에 범위가 있으니 minSuperlite 가 0\.22\.0 이상이어야 한다 \(지금 0\.21\.0\)/);
+
+  manifest(r, 'b', '0.3.0', ['a^0.1.0']);
+  const low = run('bump', 'b');
+  assert.equal(low.status, 1);
+  assert.match(low.stderr, /--min-superlite 0\.22\.0/);
+  assert.equal(run('bump', 'b', '--min-superlite', '0.22.0').status, 0);
+  // 올린 뒤에도 previous 의 0.2.0 은 범위를 적은 채 0.21.0 이라 check 가 잡는다
+  assert.match(run('check').stdout, /b 0\.2\.0: depends 에 범위가/);
+});
