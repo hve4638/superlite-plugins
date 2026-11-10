@@ -1,7 +1,7 @@
 {
   "name": "superlite-plugins",
   "plugins": [
-    { "id": "slcode", "version": "0.5.8", "source": "github:hve4638/slcode@v0.5.8" },
+    { "id": "slcode", "version": "0.5.9", "source": "github:hve4638/slcode@v0.5.9", "previous": [{ "version": "0.5.8", "ref": "v0.5.8", "depends": [] }] },
     { "id": "slcode-plugin", "version": "0.6.0", "path": "slcode-plugin" },
     { "id": "superlite-for-agents", "version": "0.5.0", "path": "superlite-for-agents", "depends": ["slcode-plugin"] },
     { "id": "orchestration", "version": "0.5.3", "path": "orchestration", "depends": ["superlite-for-agents", "slcode-plugin", "slcode"] }
