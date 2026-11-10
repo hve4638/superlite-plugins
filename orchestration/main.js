@@ -22,6 +22,7 @@
 // worker done: --submit=부모에 합침(역할의 merge 가 squash·no-ff 를 정한다. 역할이 없는 세션은 방식을 알 수 없어 거절한다, 사용자 2026-11-05), --close=지움(잃을 것이 있으면 거절), 둘 다=합치고 지움,
 // --abandon <키>=그 키가 지금 상태와 맞으면 버리고 지움. 끝나면 자기를 만든 세션(new 때 ctx.env.SLCODE_SESSION_ID)에 slcode.mail 로 알리고, 자리를 정리했으면 자기 세션을
 // slcode.close 로 닫는다 — 닫기는 맨 마지막, 이 동사의 결과가 셸에 돌아간 뒤 (slcode v0.4.0 exports, 데몬 쪽 main 이라 PATH 무관).
+// --submit 은 이 브랜치가 assignee 인 끝나지 않은 ticket 마다 메시지 끝에 `Ticket: <id>` trailer 를 붙인다 (ticket orchestration-commit-trailer, 사용자 2026-11-10: 지침만도, 거절도 아닌 자동 추가).
 // done 은 나중에 ticket 자동 처리를 붙일 입구라 merge·land 동사를 따로 두지 않는다.
 //
 // 새 방식 플러그인(plugin.json apiVersion 2) — 이 main 은 창이 아니라 세션 머신의 node 에서 돈다. git 은 워크트리가 있는
@@ -30,7 +31,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { exposeTicketFloat, withTicketFloat } from './ticketFloat.js';
-import { handleTicketVerbs } from './ticketVerbs.js';
+import { handleTicketVerbs, withTicketTrailers } from './ticketVerbs.js';
 import * as worktree from './worktree.js';
 
 /** preset → model 기본 배정 — 설정 `assign` 이 덮는다 */
@@ -50,6 +51,7 @@ const WORKER_VERBS = `- Catch up with the parent branch: superlite worker sync
 - Remove this workspace when nothing is left unmerged: superlite worker done --close
 - Discard unmerged work and remove the workspace (only after the user confirms): superlite worker done --abandon <key> (the key is shown when --close refuses)
 - Message the session that started you: superlite worker message -- <message>
+- --submit adds a "Ticket: <id>" trailer to the message for each unfinished ticket assigned to this branch.
 - That session gets the outcome and the first line of --message when you run worker done. Manage this branch only through these superlite commands.`;
 
 const startVerbs = (names) => `- Start a session of another role (${names.join(', ')}) in a new workspace under this branch: superlite orchestrate new <role> <branch> [--preset <name>] -- <instruction>
@@ -283,7 +285,8 @@ export async function activate(api) {
     const me = await callerRole(api, await loadConfig(api), ctx);
     if (submit && me === null && w.parent !== null) throw new Error('this session has no role, so the merge method is unknown. Nothing was merged. Run this from a slcode session that has a role (set one with /superlite:roleas <role>)');
     const outcome = submit && close ? 'landed' : submit ? 'submitted' : close ? 'closed' : 'abandoned';
-    const merged = submit ? await worktree.submit(w, me?.merge, message, close) : ''; // me 가 null 이면 부모 기록이 없는 경우뿐이고, submit 이 그 사유로 거절한다
+    const trailed = submit ? await withTicketTrailers(ctx, branch, message) : { note: '' };
+    const merged = submit ? await worktree.submit(w, me?.merge, trailed.message, close) : ''; // me 가 null 이면 부모 기록이 없는 경우뿐이고, submit 이 그 사유로 거절한다
     // 합친 뒤에 지우므로 부모 브랜치 기준 유실 판단이 새 상태를 본다 — 자식·미추적 파일은 submit 이 합치기 전에 이미 거절했다
     if (close || key !== null) await worktree.remove(w, key);
 
@@ -296,7 +299,7 @@ export async function activate(api) {
       delete workers[top];
       await api.storage.set('workers', workers);
     }
-    const lines = [`${branch}: ${outcome}`, merged];
+    const lines = [`${branch}: ${outcome}`, merged, trailed.note];
 
     // 자기를 만든 세션에 알린다 — 그 세션이 꺼졌거나 slcode 가 v0.4.0 보다 낮으면 알리지 못한 까닭만 출력에 남긴다
     const slcode = api.plugins.get('slcode');

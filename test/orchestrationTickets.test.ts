@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as store from '../orchestration/tickets.js';
-import { handleTicketVerbs, parseEditText, editText } from '../orchestration/ticketVerbs.js';
+import { handleTicketVerbs, parseEditText, editText, addTicketTrailers, withTicketTrailers } from '../orchestration/ticketVerbs.js';
 import { parseArgs } from './pluginhost-args.mjs';
 
 const tmp = () => fs.realpathSync(fs.mkdtempSync('/tmp/orch-ticket-'));
@@ -194,6 +194,33 @@ function harness({ openFails = false } = {}) {
   };
   return { repo, sl, opened, notes, handlers };
 }
+
+test('Ticket trailer: 빠진 id 만 더하고, 끝 문단이 trailer 묶음이면 그 묶음에 잇는다', () => {
+  assert.equal(addTicketTrailers('feat: x', ['261109-03fa']), 'feat: x\n\nTicket: 261109-03fa\n');
+  assert.equal(addTicketTrailers('feat: x\n\nbody: not alone\n\n', ['a', 'b']), 'feat: x\n\nbody: not alone\nTicket: a\nTicket: b\n');
+  assert.equal(addTicketTrailers('feat: x\n\nsome body\n', ['a']), 'feat: x\n\nsome body\n\nTicket: a\n');
+  assert.equal(addTicketTrailers('feat: x\n\nTicket: a', ['a', 'b']), 'feat: x\n\nTicket: a\nTicket: b\n');
+  assert.equal(addTicketTrailers('feat: x\n\nTicket: a', ['a']), 'feat: x\n\nTicket: a');
+  assert.equal(addTicketTrailers('feat: x', []), 'feat: x');
+});
+
+test('Ticket trailer: 이 브랜치가 assignee 인 끝나지 않은 ticket 만, 저장소가 없으면 그대로 두고 DB 를 만들지 않는다', async () => {
+  const root = tmp();
+  assert.deepEqual(await withTicketTrailers({ cwd: root, env: {} }, 'feat/a', 'm'), { message: 'm', note: '' });
+  fs.writeFileSync(`${root}/.ticket`, '.superlite/tickets.db\n');
+  assert.deepEqual(await withTicketTrailers({ cwd: root, env: {} }, 'feat/a', 'm'), { message: 'm', note: '' });
+  assert.equal(fs.existsSync(`${root}/.superlite`), false);
+  const db = await store.openStore(`${root}/.superlite/tickets.db`);
+  const [a, b, c] = ['a', 'b', 'c'].map((title) => store.createTicket(db, { title }));
+  store.updateTicket(db, a, { add: { assignee: ['feat/a'] } });
+  store.updateTicket(db, b, { add: { assignee: ['feat/a', 'feat/b'] } });
+  store.updateTicket(db, c, { add: { assignee: ['feat/a'] }, fields: { status: 'done' } });
+  db.close();
+  const r = await withTicketTrailers({ cwd: root, env: {} }, 'feat/a', 'feat: x');
+  assert.deepEqual(r.message.split('\n').filter((l) => l.startsWith('Ticket:')).sort(), [`Ticket: ${a}`, `Ticket: ${b}`].sort());
+  assert.match(r.note, /^Ticket trailer: /);
+  assert.deepEqual(await withTicketTrailers({ cwd: root, env: {} }, 'feat/none', 'm'), { message: 'm', note: '' });
+});
 
 test('동사: ticket 만 치면 하위 동사를 한 줄씩 보이고, 모르는 하위 동사는 사용법 오류다', async () => {
   const h = harness();

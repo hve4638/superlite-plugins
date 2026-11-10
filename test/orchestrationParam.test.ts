@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { registerHooks } from 'node:module';
 import { activate, uninstall } from '../orchestration/main.js';
+import * as tickets from '../orchestration/tickets.js';
 import { parseArgs } from './pluginhost-args.mjs';
 
 // slcode plugin.json 의 slcode.new 인자 (0.5.5)
@@ -111,10 +112,11 @@ test('enter: 역할 이름과 안내를 주고 역할을 적는다, 모르는 �
   assert.match(top, /another role \(sub-orchestrator\)/);
   assert.match(top, /superlite orchestrate message <branch>/);
   // 기본 지침은 역할 설명만 담고, 동사 사용법은 그래프 위치대로 붙는다
-  assert.match(top, /milestone 을 수립/);
-  assert.match(worker, /ticket 하나를 수행한다/);
+  assert.match(top, /milestone 을 만들고 닫는다/);
+  assert.match(worker, /지목한 ticket 을 수행한다/);
   // 처음에는 공통 지침도 기본값이다 — 역할 지침보다 앞에 온다
-  assert.match(worker, /Your role is worker[^\n]*\n- ticket 문서는 `ruleof ticket`[\s\S]*ticket 하나를 수행한다/);
+  assert.match(worker, /Your role is worker[^\n]*\n- ticket 과 milestone 은 `superlite ticket` 으로만[\s\S]*지목한 ticket 을 수행한다/);
+  assert.doesNotMatch(`${top}${worker}`, /ruleof|wsticket/);
   assert.doesNotMatch(`${top}${worker}`, /wtree|SendMessage|\/roleas/);
   assert.equal((await enter({ role: 'toString' }, 's3')).guide, '');
   assert.equal(h.store.get('role:s3'), undefined);
@@ -264,6 +266,26 @@ test('합치기: 역할을 찾지 못하면 합치지 않고 거절한다, 지�
   await h.exposed.roles.set(cfg);
   await h.run('orchestrate.enter', { role: 'worker' }, inA('W'));
   assert.match(String(await h.run('worker.done', { submit: true, message: 'm' }, inA('W'))), /\(squash\)/);
+});
+
+test('제출: 이 브랜치가 맡은 ticket 의 Ticket trailer 를 합친 커밋에 붙이고 출력에 알린다', async () => {
+  const h = await harness();
+  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/t', prompt: ['x'] });
+  const d = `${h.repo}.worktrees/feat-t`;
+  git(d, 'config', 'user.name', 't');
+  git(d, 'config', 'user.email', 't@t');
+  fs.writeFileSync(`${d}/t.txt`, 'x\n');
+  git(d, 'add', 't.txt');
+  git(d, 'commit', '-qm', 'wip');
+  const dbFile = `${fs.realpathSync(fs.mkdtempSync('/tmp/orch-trailer-'))}/tickets.db`;
+  const db = await tickets.openStore(dbFile);
+  const id = tickets.createTicket(db, { title: 't' });
+  tickets.updateTicket(db, id, { add: { assignee: ['feat/t'] } });
+  db.close();
+  const at = { cwd: d, tmux: '%1', env: { SLCODE_SESSION_ID: 'W', TICKET_PATH: dbFile } };
+  await h.run('orchestrate.enter', { role: 'worker' }, at);
+  assert.match(String(await h.run('worker.done', { submit: true, message: 'feat: t' }, at)), new RegExp(`\\(squash\\)\nTicket trailer: ${id}`));
+  assert.equal(git(h.repo, 'log', '-1', '--format=%B', 'main'), `feat: t\n\nTicket: ${id}`);
 });
 
 test('메시지: 부모와 직접 띄운 자식 사이에만 오간다', async () => {

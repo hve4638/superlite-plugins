@@ -1,2 +1,4 @@
-- ticket 문서는 `ruleof ticket`, milestone 문서는 `ruleof milestone` 출력의 형식과 완료 절차를 따른다.
+- ticket 과 milestone 은 `superlite ticket` 으로만 읽고 쓴다. 명령 목록은 `superlite ticket`, 인자는 `superlite ticket <명령> --help` 로 본다.
+- 커밋 메시지에는 실제 구현 내용만 짧게 쓴다. 이유와 맥락, 검토했다 버린 대안은 ticket 의 reason 에 적는다.
+- 커밋 메시지 끝의 git trailer `Ticket: <id>` 는 제출할 때 이 브랜치가 assignee 인 ticket 마다 자동으로 붙는다. 직접 적지 않는다.
 - 결정이 필요한 일과 사용자의 의도 확인은 이 세션에서 사용자에게 직접 묻는다.

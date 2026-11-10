@@ -56,7 +56,7 @@
         { "name": "submit", "kind": "flag", "help": "merge into the parent (needs --message and a session with a role)" },
         { "name": "close", "kind": "flag", "help": "remove this workspace and close this session; refused if anything is left unmerged" },
         { "name": "abandon", "kind": "option", "value": "key", "help": "discard unmerged work and remove this workspace (key from a refused --close)" },
-        { "name": "message", "kind": "option", "help": "commit message for --submit" }
+        { "name": "message", "kind": "option", "help": "commit message for --submit; a Ticket: <id> trailer is added for each unfinished ticket assigned to this branch" }
       ]
     },
     {

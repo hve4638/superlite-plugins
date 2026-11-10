@@ -148,6 +148,43 @@ function watchEdit(api, ctx, dbFile, id, file) {
   watching.set(file, watcher);
 }
 
+// ---- worker done --submit 의 Ticket trailer
+
+/** 메시지 끝에 ids 의 `Ticket: <id>` 줄을 더한다 — 이미 적힌 id 는 건너뛰고, 끝 문단이 trailer 묶음이면 그 묶음에 잇는다 */
+export function addTicketTrailers(message, ids) {
+  const have = new Set([...message.matchAll(/^Ticket:\s*(\S+)\s*$/gm)].map((m) => m[1]));
+  const add = ids.filter((id) => !have.has(id));
+  if (add.length === 0) return message;
+  const body = message.trimEnd();
+  const paras = body.split(/\n[ \t]*\n/);
+  const inBlock = paras.length > 1 && paras.at(-1).split('\n').every((l) => /^[A-Za-z0-9-]+:\s/.test(l));
+  return `${body}${inBlock ? '\n' : '\n\n'}${add.map((id) => `Ticket: ${id}`).join('\n')}\n`;
+}
+
+/** 이 브랜치가 assignee 인, 끝나지 않은 ticket 의 trailer 를 붙인 메시지와 출력에 남길 줄. 저장소가 없으면 그대로, 저장소를 열지 못하면 붙이지 않고 사유만 알린다 (제출은 막지 않는다) */
+export async function withTicketTrailers(ctx, branch, message) {
+  let file;
+  try {
+    ({ file } = store.findStore(ctx.cwd, ctx.env));
+  } catch {
+    return { message, note: '' };
+  }
+  if (!fs.existsSync(file)) return { message, note: '' }; // 제출이 빈 DB 를 만들지 않게
+  let ids;
+  try {
+    const db = await store.openStore(file);
+    try {
+      ids = store.listTickets(db, { assignee: branch }).map((t) => t.id);
+    } finally {
+      db.close();
+    }
+  } catch (e) {
+    return { message, note: `no Ticket trailer: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  const next = addTicketTrailers(message, ids);
+  return { message: next, note: next === message ? '' : `Ticket trailer: ${ids.join(', ')}` };
+}
+
 /** @param {import('@superlite/plugin').MainApi} api */
 export function handleTicketVerbs(api) {
   // 하위 동사 목록 — plugin.json 의 선언에서 만든다. `superlite ticket --help` 는 데몬이 가로채 이 동사의 help 를 보인다
