@@ -6,7 +6,8 @@
   "renderer": "renderer.js",
   "views": [
     { "id": "roles", "entry": "views/roles.js", "title": "Orchestration roles", "icon": "organization" },
-    { "id": "sidebar", "entry": "views/sidebar.js", "title": "Orchestration", "icon": "organization" }
+    { "id": "sidebar", "entry": "views/sidebar.js", "title": "Orchestration", "icon": "organization" },
+    { "id": "tickets", "entry": "views/tickets.js", "title": "Tickets", "icon": "checklist" }
   ],
   "depends": ["superlite-for-agents", "slcode-plugin", "slcode"],
   "env": ["SLCODE_SESSION_ID", "TICKET_PATH"],

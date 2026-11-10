@@ -21,7 +21,7 @@ function git(cwd, args) {
 }
 
 /** 이 폴더의 브랜치 — assignee·log 의 session 값. 저장소 밖이거나 분리된 HEAD 면 null */
-async function branchOf(cwd) {
+export async function branchOf(cwd) {
   const b = (await git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']))?.trim();
   return b && b !== 'HEAD' ? b : null;
 }

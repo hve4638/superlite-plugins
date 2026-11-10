@@ -6,6 +6,7 @@
 //   superlite worker done --submit [--close] --message <m> | --close | --abandon <키>
 //   superlite worker message -- <내용>                                       (자기를 띄운 세션에)
 //   superlite ticket new|ls|show|set|edit|log|done|drop|milestone|root       (ticket 저장소, ticketVerbs.js·tickets.js)
+//   (ticket 동사를 친 셸의 카드에 맡은 ticket 알약을 붙인다 — ticketFloat.js, views/tickets.js)
 //
 // 역할과 연결선은 사용자가 탭에서 그린다(views/roles.js, storage config). 선의 뜻은 "이 역할이 저 역할을 시작할 수 있다" 하나다 (사용자 2026-11-04).
 // 권한 칸은 없다: orchestrate new 는 호출자 역할에서 나가는 선의 대상만, worker 명령은 이 브랜치에 부모 기록이 있을 때만 쓴다 — 세션 트리(실제 부모)와 역할 그래프는 별개다.
@@ -28,6 +29,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { exposeTicketFloat, withTicketFloat } from './ticketFloat.js';
 import { handleTicketVerbs } from './ticketVerbs.js';
 import * as worktree from './worktree.js';
 
@@ -321,7 +323,8 @@ export async function activate(api) {
     return lines.filter((l) => l !== '').join('\n');
   });
 
-  handleTicketVerbs(api);
+  handleTicketVerbs(withTicketFloat(api));
+  exposeTicketFloat(api);
 
   // 핸들러 뒤에 — 실패해도 동사는 산다. 데몬 시작 때는 창이 없어 알림이 버려지므로 로그에 남기고, 다음 orchestrate 가 다시 시도하며 오류를 낸다
   await writeRoleNames(api, (await loadConfig(api)).roles.map((r) => r.name));
