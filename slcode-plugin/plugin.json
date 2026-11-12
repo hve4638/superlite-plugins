@@ -1,6 +1,6 @@
 {
   "id": "slcode-plugin",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "apiVersion": 2,
   "main": "main.js",
   "bin": { "slcode-plugin": "bin/slcode-plugin" }
