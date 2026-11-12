@@ -65,7 +65,6 @@ const RULE = 'Use lowercase letters, digits and - (no leading -, 32 at most)';
 const HINT = 'Applies at next start or compaction';
 const COMMON = '_common'; // main.js 와 같은 이름
 const MERGE_TIP = 'How this role merges into its parent. Squash makes one commit and rewrites this branch, so sessions started from it can conflict at sync. A merge commit keeps its commits and is safe for roles that start sessions.';
-const FOLDER_TIP = 'Put this role\'s workspace and the sessions it starts in their own folder under <repo>.worktrees, named after the last part of the branch.';
 
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const icon = (k) => `<svg class="i" viewBox="0 0 16 16" aria-hidden="true">${ICON[k]}</svg>`;
@@ -95,7 +94,7 @@ export async function mount(el, ctx) {
   /** 편집 값 → 보내는 값. 키 순서를 고정해 견준다 */
   const plain = (c) => ({
     common: c.common,
-    roles: c.roles.map(({ name, merge, separate, x, y, guide }) => ({ name, merge, separate, x, y, guide })),
+    roles: c.roles.map(({ name, merge, x, y, guide }) => ({ name, merge, x, y, guide })),
     edges: c.edges.map((e) => ({ from: e.from.name, to: e.to.name })),
   });
   const canon = (c) => JSON.stringify(plain(c));
@@ -146,7 +145,7 @@ export async function mount(el, ctx) {
     canvas.style.width = `${Math.max(...cfg.roles.map((r) => r.x), 0) + BW + 160}px`;
     canvas.style.height = `${Math.max(...cfg.roles.map((r) => r.y), 0) + BH + 160}px`;
   };
-  const boxSub = (r) => `${r.merge === 'no-ff' ? 'Merge commit' : 'Squash'}${r.separate ? ' · own folder' : ''}`;
+  const boxSub = (r) => (r.merge === 'no-ff' ? 'Merge commit' : 'Squash');
   const drawBoxes = () => {
     boxes.innerHTML = cfg.roles.map((r, i) => `<div class="box${r === sel ? ' sel' : ''}" role="listitem" tabindex="0" data-i="${i}" style="left:${r.x}px;top:${r.y}px"><span class="bn${r.name ? '' : ' blank'}">${esc(r.name || 'unnamed')}</span><span class="bs">${boxSub(r)}</span><span class="port" title="Drag onto a role this one can start"></span></div>`).join('');
     sizeCanvas();
@@ -162,7 +161,7 @@ export async function mount(el, ctx) {
     const starts = others.length === 0 ? '<div class="sub">Add another role to connect this one.</div>' : others.map((o) => `<label class="ck"><input type="checkbox" data-start="${cfg.roles.indexOf(o)}"${cfg.edges.some((e) => e.from === r && e.to === o) ? ' checked' : ''}>${esc(o.name || 'unnamed')}</label>`).join('');
     return `<div><label class="lb" for="rn">Name</label><input id="rn" class="field" data-k="name" value="${esc(r.name)}" placeholder="name" spellcheck="false"><div class="er" hidden></div></div>
 <div><div class="lb">Can start</div>${starts}<div class="sub sb" style="margin-top:4px">${startedBy(r)}</div></div>
-<div class="row"><label title="${esc(MERGE_TIP)}">Merge<select data-k="merge" aria-label="How this role merges into its parent"><option value="squash"${r.merge === 'no-ff' ? '' : ' selected'}>Squash</option><option value="no-ff"${r.merge === 'no-ff' ? ' selected' : ''}>Merge commit</option></select></label><label title="${esc(FOLDER_TIP)}"><input type="checkbox" data-k="separate"${r.separate ? ' checked' : ''}>Own folder</label></div>
+<div class="row"><label title="${esc(MERGE_TIP)}">Merge<select data-k="merge" aria-label="How this role merges into its parent"><option value="squash"${r.merge === 'no-ff' ? '' : ' selected'}>Squash</option><option value="no-ff"${r.merge === 'no-ff' ? ' selected' : ''}>Merge commit</option></select></label></div>
 <div><label class="lb" for="rg">Guide</label><textarea id="rg" class="field" data-k="guide" placeholder="Guide for this role"></textarea></div>
 <div class="tools"><button class="tl" data-act="preview" aria-pressed="${showPv}" title="Show what this role receives">${icon('eye')}Preview</button><button class="tl" data-act="file" title="Edit in editor">${icon('edit')}Edit in editor</button><button class="tl del" data-act="del" title="Delete role">${icon('trash')}Delete</button></div>${showPv ? `<div class="pvb" aria-label="Preview of the injected guide">${pvHtml}</div>` : ''}`;
   };
@@ -309,7 +308,7 @@ export async function mount(el, ctx) {
 
   $('.cm').addEventListener('click', () => select(null));
   $('.add').addEventListener('click', () => {
-    const r = { name: '', merge: 'squash', separate: false, x: 40, y: cfg.roles.length ? Math.max(...cfg.roles.map((o) => o.y)) + BH + 24 : 60, guide: '' };
+    const r = { name: '', merge: 'squash', x: 40, y: cfg.roles.length ? Math.max(...cfg.roles.map((o) => o.y)) + BH + 24 : 60, guide: '' };
     note = false; failure = '';
     cfg.roles.push(r);
     fresh = r;
@@ -322,7 +321,7 @@ export async function mount(el, ctx) {
     const k = e.target.dataset.k;
     if (k === 'common') cfg.common = e.target.value;
     else if (k !== undefined) {
-      sel[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+      sel[k] = e.target.value;
       const row = boxes.children[cfg.roles.indexOf(sel)];
       if (k === 'name') {
         fresh = null;

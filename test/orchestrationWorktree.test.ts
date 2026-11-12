@@ -1,10 +1,12 @@
-// orchestration 의 워크트리 관리 (orchestration/worktree.js) — 실제 git 으로 임시 저장소에서 돌린다. `node --test test/orchestrationWorktree.test.ts`.
+// orchestration 의 합치기·동기화 (orchestration/worktree.js) — 실제 git 으로 임시 저장소에서 돌린다. `node --test test/orchestrationWorktree.test.ts`.
+// 자리는 slcode team --worktree 와 같은 꼴로 만든다 (slcodeTeam.ts)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { create, locate, remove, submit, sync } from '../orchestration/worktree.js';
+import { checkRemovable, locate, submit, sync } from '../orchestration/worktree.js';
+import { removeTeamWorktree, teamWorktree } from './slcodeTeam.ts';
 
 const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const write = (dir: string, file: string, text: string) => fs.writeFileSync(path.join(dir, file), text);
@@ -22,29 +24,18 @@ function repo() {
   commit(r, 'a.txt', 'a\n');
   return r;
 }
-const child = async (from: string, branch: string, separate = false) => create(await locate(from), branch, separate);
+const child = async (from: string, branch: string) => teamWorktree(from, branch);
 const oid = (cwd: string, rev: string) => git(cwd, 'rev-parse', rev);
 
-test('자리: 저장소 옆 .worktrees 에 .gitignore 와 함께 만들고, 부모 브랜치를 기록한다', async () => {
+test('부모: slcode team 이 적은 slcodeparent 를 읽는다, 워크트리 안에서 띄운 자식은 그 브랜치가 부모다', async () => {
   const r = repo();
-  const d = await child(r, 'feat/x');
-  assert.equal(d, `${r}.worktrees/feat-x`);
-  assert.equal(fs.readFileSync(`${r}.worktrees/.gitignore`, 'utf8'), '*\n');
-  assert.equal((await locate(d)).parent, 'main');
-  assert.equal(git(r, 'status', '--porcelain'), '');
-  write(`${r}.worktrees`, '.gitignore', 'kept\n');
-  await child(r, 'feat/y');
-  assert.equal(fs.readFileSync(`${r}.worktrees/.gitignore`, 'utf8'), 'kept\n');
-});
-
-test('자리: 분리 역할은 자기 폴더에, 그 자식은 같은 폴더에, 이름이 겹치면 거절한다', async () => {
-  const r = repo();
-  const lead = await child(r, 'dev/minor', true);
-  assert.equal(lead, `${r}.worktrees/minor/dev-minor`);
-  assert.equal(await child(lead, 'feat/x'), `${r}.worktrees/minor/feat-x`);
-  assert.equal((await locate(`${r}.worktrees/minor/feat-x`)).parent, 'dev/minor');
-  await assert.rejects(child(r, 'fix/minor', true), /folder already exists/);
-  await assert.rejects(child(r, 'feat/z-dup'.replace('z-dup', 'x')), /cannot create workspace/);
+  const lead = await child(r, 'dev/minor');
+  assert.equal(lead, `${r}.worktrees/dev-minor`);
+  assert.equal((await locate(lead)).parent, 'main');
+  const w = await child(lead, 'feat/x');
+  assert.equal(w, `${r}.worktrees/feat-x`);
+  assert.equal((await locate(w)).parent, 'dev/minor');
+  assert.equal((await locate(r)).parent, null);
 });
 
 test('sync: 부모를 받아 오고, 충돌은 아무것도 바꾸지 않고 거절한다', async () => {
@@ -122,7 +113,7 @@ test('submit squash 실패: 훅이 거절하면 브랜치·부모·파일이 그
 
 test('submit no-ff: 조상 관계를 유지해 자식의 sync 가 안전하다', async () => {
   const r = repo();
-  const lead = await child(r, 'dev/minor', true);
+  const lead = await child(r, 'dev/minor');
   const w = await child(lead, 'feat/x');
   commit(w, 'w.txt', 'w\n');
   await submit(await locate(w), 'squash', 'feat: w', false);
@@ -161,46 +152,31 @@ test('submit 거절: 변경·충돌·부모 쪽 겹치는 변경은 양쪽을 �
   assert.equal(fs.readFileSync(`${e}/note.txt`, 'utf8'), 'untracked\n');
 });
 
-test('제출 뒤 지우기: 미추적 파일·열린 자식은 합치기 전에 거절하고, 깨끗하면 합치고 지운다', async () => {
+test('제출 뒤 지우기: 미추적 파일·열린 자식은 합치기 전에 거절하고, 깨끗하면 합친다', async () => {
   const r = repo();
-  const lead = await child(r, 'dev/minor', true);
+  const lead = await child(r, 'dev/minor');
   const w = await child(lead, 'feat/x');
   commit(lead, 'l.txt', 'l\n');
   const before = oid(r, 'main');
   await assert.rejects(submit(await locate(lead), 'no-ff', 'm', true), /still open \(feat\/x\)/);
   assert.equal(oid(r, 'main'), before);
-  await remove(await locate(w), null);
+  removeTeamWorktree(w);
   write(lead, 'note.txt', 'n\n');
   await assert.rejects(submit(await locate(lead), 'no-ff', 'm', true), /commit or remove these first/);
   assert.equal(oid(r, 'main'), before);
   fs.rmSync(`${lead}/note.txt`);
-  const at = await locate(lead);
-  await submit(at, 'no-ff', 'm', true);
-  await remove(at, null);
+  await submit(await locate(lead), 'no-ff', 'm', true);
   assert.equal(fs.readFileSync(`${r}/l.txt`, 'utf8'), 'l\n');
-  assert.equal(fs.existsSync(`${r}.worktrees/minor`), false, '비어 있는 분리 폴더도 치운다');
-  assert.equal(git(r, 'branch', '--list', 'dev/minor'), '');
-  assert.equal(git(r, 'config', '--get-regexp', 'superliteparent|^core\\.bare$').includes('superliteparent'), false);
 });
 
-test('지우기: 잃을 것이 있으면 키를 주고 거절, 틀린 키·바뀐 상태는 거절, 맞는 키만 버린다', async () => {
+test('지우기 전 검사: 부모 기록이 없거나 열린 자식이 있으면 거절한다 (잃을 작업은 slcode 가 본다)', async () => {
   const r = repo();
-  const d = await child(r, 'feat/x');
-  commit(d, 'b.txt', 'b\n');
-  const refused = await remove(await locate(d), null).then(() => '', (e: Error) => e.message);
-  assert.match(refused, /not removed: commits not in main.*--abandon [0-9a-f]{5}/);
-  const key = /--abandon ([0-9a-f]{5})/.exec(refused)![1];
-  write(d, 'note.txt', 'n\n');
-  await assert.rejects(remove(await locate(d), key), /does not match the current state \(uncommitted changes, commits not in main\)/);
-  fs.rmSync(`${d}/note.txt`);
-  await remove(await locate(d), key);
-  assert.equal(fs.existsSync(d), false);
-  assert.equal(git(r, 'branch', '--list', 'feat/x'), '');
-  // squash 로 합친 뒤 부모가 더 움직여도 잃을 것이 없다
-  const e = await child(r, 'feat/e');
-  commit(e, 'e.txt', 'e\n');
-  await submit(await locate(e), 'squash', 'm', false);
-  commit(r, 'z.txt', 'z\n');
-  await remove(await locate(e), null);
-  assert.equal(fs.existsSync(e), false);
+  const lead = await child(r, 'dev/minor');
+  await assert.rejects(checkRemovable(await locate(r)), /no recorded parent/);
+  const w = await child(lead, 'feat/x');
+  await assert.rejects(checkRemovable(await locate(lead)), /still open \(feat\/x\)/);
+  commit(w, 'b.txt', 'b\n');
+  await checkRemovable(await locate(w));
+  removeTeamWorktree(w);
+  await checkRemovable(await locate(lead));
 });

@@ -1,19 +1,19 @@
-// 위임·동기화·합류에 필요한 워크트리 관리 (사용자 2026-11-04: wtree 대신 필요한 기능만 내장). 규칙 파일·정책 판정은 없다 — 역할은 main.js 가 본다.
+// 워커 자리의 합치기·동기화 (사용자 2026-11-04: wtree 대신 필요한 기능만 내장). 규칙 파일·정책 판정은 없다 — 역할은 main.js 가 본다.
 //
-// 자리: <저장소>.worktrees/ (저장소 옆, 사용자 결정 — 안에 두면 Node 해석·상위 설정이 본체를 읽는다). 그 안의 .gitignore(*)가 상위 폴더 저장소의 추적을 막는다.
-// 폴더 분리 역할은 <루트>/<브랜치 끝 이름>/<브랜치>, 그 밖의 역할은 자기를 띄운 세션과 같은 폴더.
-// 부모 브랜치: git config branch.<브랜치>.superliteparent — 브랜치를 지우면 git 이 함께 지운다.
+// 자리(워크트리·브랜치)를 만들고 지우는 일은 slcode team 이 한다 (ticket orchestration-slcode-team, 사용자 2026-11-11): orchestrate new 의 slcode.team --worktree,
+// worker done 의 clean-worktree --self. 여기는 그 자리를 읽고 합친다.
+// 부모 브랜치: git config branch.<브랜치>.slcodeparent — slcode team 이 적고, 브랜치를 지우면 git 이 함께 지운다. 옛 superliteparent 는 읽지 않는다.
 // 합류: merge-tree 로 충돌을 메모리에서 미리 본 뒤 커밋을 만들고 부모를 fast-forward 한다. 그 사이 부모가 움직이면 ff 가 실패하므로 잠금이 필요 없다.
 // squash 는 wtree 와 같다 (사용자 2026-11-05): 갈라진 지점으로 reset --soft → git commit → 부모 위로 rebase. 커밋 훅·서명이 돈다. no-ff 는 wtree 처럼 commit-tree 로 부모 둘짜리 커밋을 만든다.
 // 끝나면 어느 쪽이든 브랜치와 부모가 같은 커밋이다 — no-ff 는 조상 관계를 유지해서 이 브랜치의 자식이 sync 해도 안전하고,
 // squash 는 브랜치를 옮겨 쓰므로 자식이 있는 브랜치에는 충돌·되돌림 위험이 있다 (이 저장소 사고 2026-09-12·09-30). 그래서 기본값은 자식을 띄우는 역할만 no-ff.
-// 유실 판단은 "부모에 합쳐도 트리가 그대로인가" 하나 — 조상·squash·변경 없음을 모두 덮는다 (wtree reflected_in_parent 의 마지막 시험). git 2.38 이상이 필요하다.
+// "합칠 것이 없다" 는 "부모에 합쳐도 트리가 그대로인가" 하나로 본다 (wtree reflected_in_parent 의 마지막 시험). git 2.38 이상이 필요하다.
 // git 은 셸 없이 직접 부른다 — api.proc 는 Windows 에서 cmd /C 라 인용이 깨지고 여러 줄 메시지를 못 넘긴다. ponytail: no-ff 의 커밋 훅·서명은 commit-tree 라 돌지 않는다 (wtree 도 같다). wtree 와 달리 변경이 있으면 stash 하지 않고 거절한다.
 
-import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import fs from 'node:fs/promises';
-import path from 'node:path';
+
+/** 부모 브랜치를 적는 git config 키 — slcode src/worktree.ts PARENT_KEY 와 같아야 한다 */
+const PARENT_KEY = 'slcodeparent';
 
 function git(cwd, args, input) {
   return new Promise((resolve, reject) => {
@@ -33,9 +33,6 @@ async function must(cwd, args, what) {
   return r.stdout.trim();
 }
 
-const rootOf = (main) => path.normalize(`${main}.worktrees`);
-const folderOf = (branch) => branch.replaceAll('/', '-');
-
 /** cwd 가 있는 워크트리 — top·branch·부모 브랜치와, 저장소의 워크트리 목록(맨 앞이 본체) */
 export async function locate(cwd) {
   const top = await must(cwd, ['rev-parse', '--show-toplevel'], 'this must run inside a git repository');
@@ -46,32 +43,12 @@ export async function locate(cwd) {
     if (line.startsWith('worktree ')) list.push({ path: line.slice('worktree '.length), branch: null });
     else if (line.startsWith('branch refs/heads/')) list.at(-1).branch = line.slice('branch refs/heads/'.length);
   }
-  const parent = (await git(top, ['config', '--get', `branch.${branch}.superliteparent`])).stdout.trim() || null;
+  const parent = (await git(top, ['config', '--get', `branch.${branch}.${PARENT_KEY}`])).stdout.trim() || null;
   return { top, branch, parent, main: list[0].path, list };
 }
 
-/** 이 브랜치의 자식으로 새 브랜치와 워크트리를 만들고 그 폴더를 돌려준다 */
-export async function create(w, branch, separate) {
-  const root = rootOf(w.main);
-  let dir;
-  if (separate) {
-    const own = path.join(root, branch.split('/').pop());
-    if (await fs.access(own).then(() => true, () => false)) throw new Error(`folder already exists: ${own}`);
-    dir = path.join(own, folderOf(branch));
-  } else {
-    dir = path.join(w.top === w.main ? root : path.dirname(w.top), folderOf(branch));
-  }
-  if (dir.startsWith(root + path.sep)) {
-    await fs.mkdir(root, { recursive: true });
-    await fs.writeFile(path.join(root, '.gitignore'), '*\n', { flag: 'wx' }).catch((e) => { if (e.code !== 'EEXIST') throw e; });
-  }
-  await must(w.top, ['worktree', 'add', '-q', '-b', branch, dir], `cannot create workspace ${branch}`);
-  await must(w.top, ['config', `branch.${branch}.superliteparent`, w.branch], `cannot record the parent of ${branch}`);
-  return dir;
-}
-
 function parentOf(w) {
-  if (w.parent === null) throw new Error(`${w.branch} has no recorded parent: worker commands work only on branches made by superlite orchestrate new`);
+  if (w.parent === null) throw new Error(`${w.branch} has no recorded parent: worker commands work only on branches made by superlite orchestrate new (slcode team --worktree)`);
   return w.parent;
 }
 
@@ -96,8 +73,8 @@ export async function sync(w) {
 }
 
 async function refuseOpenChildren(w) {
-  const r = await git(w.top, ['config', '--get-regexp', '^branch\\..*\\.superliteparent$']);
-  const open = r.stdout.split('\n').map((l) => /^branch\.(.+)\.superliteparent (.+)$/.exec(l)).filter((m) => m?.[2] === w.branch).map((m) => m[1]);
+  const r = await git(w.top, ['config', '--get-regexp', `^branch\\..*\\.${PARENT_KEY}$`]);
+  const open = r.stdout.split('\n').map((l) => new RegExp(`^branch\\.(.+)\\.${PARENT_KEY} (.+)$`).exec(l)).filter((m) => m?.[2] === w.branch).map((m) => m[1]);
   if (open.length > 0) throw new Error(`not removed: branches started from ${w.branch} are still open (${open.join(', ')})`);
 }
 
@@ -141,34 +118,8 @@ export async function submit(w, how, message, closing) {
   return `merged into ${p} as ${commit.slice(0, 8)} (${how})`;
 }
 
-/** 지금 상태의 확인 키 — 커밋·변경·미추적 파일이 바뀌면 키도 바뀌어 옛 확인이 듣지 않는다 */
-async function stateKey(top) {
-  const head = await must(top, ['rev-parse', 'HEAD'], 'cannot read HEAD');
-  const diff = (await git(top, ['diff', 'HEAD'])).stdout;
-  const others = (await git(top, ['ls-files', '--others', '--exclude-standard'])).stdout;
-  const hashes = others === '' ? '' : (await git(top, ['hash-object', '--stdin-paths'], others)).stdout;
-  return createHash('sha1').update([head, diff, others, hashes].join('\0')).digest('hex').slice(0, 5);
-}
-
-/** 지우면 잃는 것 — 없으면 빈 목록 */
-async function risks(w) {
-  const out = [];
-  if ((await git(w.top, ['status', '--porcelain'])).stdout.trim() !== '') out.push('uncommitted changes');
-  const { tree } = await mergedTree(w.top, w.parent, 'HEAD');
-  if (tree !== await must(w.top, ['rev-parse', `${w.parent}^{tree}`], `cannot read ${w.parent}`)) out.push(`commits not in ${w.parent}`);
-  return out;
-}
-
-/** 워크트리와 브랜치를 지운다. 부모 기록이 없는 브랜치는 이 플러그인 것이 아니라 지우지 않는다. key 가 없으면 잃을 것이 있을 때 거절하고, 있으면 지금 상태와 맞을 때 잃을 것까지 버린다 */
-export async function remove(w, key) {
+/** 지우기 전 검사 — 이 플러그인이 띄운 자리가 아니거나(부모 기록 없음) 이 브랜치에서 띄운 자식이 남아 있으면 거절한다. 잃을 작업은 slcode clean-worktree 가 본다 */
+export async function checkRemovable(w) {
   parentOf(w);
   await refuseOpenChildren(w);
-  const lost = await risks(w);
-  const now = await stateKey(w.top);
-  if (key === null && lost.length > 0) throw new Error(`not removed: ${lost.join(', ')}. Hand it in with --submit, or discard it (after the user confirms) with: superlite worker done --abandon ${now}`);
-  if (key !== null && key !== now) throw new Error(`not removed: the key does not match the current state (${lost.join(', ') || 'nothing at risk'}). The current key is ${now}: superlite worker done --abandon ${now}`);
-  await must(w.main, key === null ? ['worktree', 'remove', w.top] : ['worktree', 'remove', '--force', w.top], `cannot remove workspace ${w.top}`);
-  await must(w.main, ['branch', '-D', w.branch], `workspace removed, but could not delete branch ${w.branch}`);
-  const up = path.dirname(w.top);
-  if (path.dirname(path.normalize(up)) === rootOf(w.main)) await fs.rmdir(up).catch(() => {}); // 분리 폴더 — 남은 것이 있으면 그대로 둔다
 }

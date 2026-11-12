@@ -14,20 +14,12 @@
   "verbs": [
     {
       "name": "orchestrate.new",
-      "help": "Create a workspace (new branch from this shell's) and open a slcode session there; the session gets that role's guide",
+      "help": "Start a slcode teammate of this session in a new workspace (slcode team --worktree: a new branch from this shell's); it gets that role's guide. Only inside a slcode session",
       "args": [
         { "name": "role", "kind": "positional", "required": true, "help": "role this session can start" },
         { "name": "branch", "kind": "positional", "required": true, "help": "branch name of the new workspace" },
         { "name": "preset", "kind": "option", "help": "model preset from the assign setting: high | low | coordinate | refactor | review (default: coordinate for a role that starts other roles, else high)" },
         { "name": "prompt", "kind": "rest", "required": true, "help": "first instruction for the session" }
-      ]
-    },
-    {
-      "name": "orchestrate.message",
-      "help": "Send a message to a session this session started",
-      "args": [
-        { "name": "branch", "kind": "positional", "required": true, "help": "branch of that session" },
-        { "name": "text", "kind": "rest", "required": true, "help": "the message" }
       ]
     },
     {
@@ -43,19 +35,12 @@
       "help": "Bring the parent branch's latest work into this workspace"
     },
     {
-      "name": "worker.message",
-      "help": "Send a message to the session that started this one",
-      "args": [
-        { "name": "text", "kind": "rest", "required": true, "help": "the message" }
-      ]
-    },
-    {
       "name": "worker.done",
       "help": "Finish this workspace: --submit merges into the parent, --close removes it, both do both, --abandon <key> discards and removes",
       "args": [
         { "name": "submit", "kind": "flag", "help": "merge into the parent (needs --message and a session with a role)" },
-        { "name": "close", "kind": "flag", "help": "remove this workspace and close this session; refused if anything is left unmerged" },
-        { "name": "abandon", "kind": "option", "value": "key", "help": "discard unmerged work and remove this workspace (key from a refused --close)" },
+        { "name": "close", "kind": "flag", "help": "remove this workspace (slcode team clean-worktree --self) and close this session; refused if anything is left unmerged" },
+        { "name": "abandon", "kind": "option", "value": "key", "help": "discard unmerged work and remove this workspace (the key slcode shows when --close refuses)" },
         { "name": "message", "kind": "option", "help": "commit message for --submit; a Ticket: <id> trailer is added for each unfinished ticket assigned to this branch" }
       ]
     },
@@ -154,7 +139,7 @@
   ],
   "settings": {
     "title": "Orchestration",
-    "description": "superlite orchestrate new <role> <branch> [--preset <name>] -- <prompt>, superlite worker sync|done|message; roles are edited from the Orchestration sidebar — needs git 2.38 or later on the session machine and the slcode plugin; values are stored on the session machine",
+    "description": "superlite orchestrate new <role> <branch> [--preset <name>] -- <prompt>, superlite worker sync|done; sessions message each other with slcode mail; roles are edited from the Orchestration sidebar — needs git 2.38 or later on the session machine and the slcode plugin; values are stored on the session machine",
     "items": [
       {
         "key": "assign",

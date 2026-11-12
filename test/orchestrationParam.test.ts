@@ -1,6 +1,6 @@
-// orchestration 의 slcode.new --param·애드온 등록 (ticket orchestration-slcode-param·orchestration-sfa-addon) — `node --test test/orchestrationParam.test.ts`.
-// 실제 slcode 없이 가짜 api 로 main.js 를 돌린다. slcode.new 인자 해석은 main 끼리 verbs.run 이 거치는 데몬 pluginhost.mjs 의 parseArgs 를
-// 사본(pluginhost-args.mjs)으로 쓴다
+// orchestration 의 slcode.team 띄우기·애드온 등록·worker done (ticket orchestration-slcode-param·orchestration-sfa-addon·orchestration-slcode-team) — `node --test test/orchestrationParam.test.ts`.
+// 실제 slcode 없이 가짜 api 로 main.js 를 돌린다. slcode.team 인자 해석은 main 끼리 verbs.run 이 거치는 데몬 pluginhost.mjs 의 parseArgs 를
+// 사본(pluginhost-args.mjs)으로 쓰고, 자리는 slcode team --worktree 와 같은 꼴로 만든다 (slcodeTeam.ts)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -9,12 +9,14 @@ import { registerHooks } from 'node:module';
 import { activate, uninstall } from '../orchestration/main.js';
 import * as tickets from '../orchestration/tickets.js';
 import { parseArgs } from './pluginhost-args.mjs';
+import { removeTeamWorktree, teamWorktree } from './slcodeTeam.ts';
 
-// slcode plugin.json 의 slcode.new 인자 (0.5.5)
+// slcode plugin.json 의 slcode.team 인자 (0.5.11)
 const opt = (name: string) => ({ name, kind: 'option' });
-const slcodeNew = {
-  name: 'slcode.new',
-  args: [...['cwd', 'vendor', 'title', 'mode', 'model', 'effort', 'profile', 'env', 'param', 'prompt'].map(opt), { name: 'focus', kind: 'flag' }],
+const flag = (name: string) => ({ name, kind: 'flag' });
+const slcodeTeam = {
+  name: 'slcode.team',
+  args: [opt('leader'), ...['subagent', 'teammate', 'detached'].map(flag), ...['cwd', 'worktree', 'name', 'options', 'agent', 'model', 'effort', 'mode', 'profile', 'env', 'param', 'prompt'].map(opt)],
 };
 
 type Call = Record<string, unknown>;
@@ -28,12 +30,15 @@ function tempRepo() {
   return r;
 }
 
-async function harness({ failWith = null as string | null, addFails = false, mailFails = false } = {}) {
+/** loss: slcode clean-worktree 가 잃을 작업을 찾은 것처럼 — 그 key 를 주어야 지운다 */
+async function harness({ failWith = null as string | null, addFails = false, mailFails = false, loss = null as { reasons: string[]; key: string } | null } = {}) {
   const repo = tempRepo();
   const handlers = new Map<string, (a: Record<string, unknown>, ctx: unknown) => Promise<unknown>>();
   const calls: Call[] = [];
   const cli: string[][] = [];
   const mails: { to: string; text: string; from?: string }[] = [];
+  const cleans: { self: string; key?: string }[] = [];
+  const worktrees = new Map<string, string>(); // 팀원 세션 id → worktree (slcode 세션 기록의 meta.worktree)
   let nextSession = 1;
   const store = new Map<string, unknown>();
   const exposed: Record<string, Record<string, (...a: unknown[]) => unknown>> = {};
@@ -45,25 +50,39 @@ async function harness({ failWith = null as string | null, addFails = false, mai
     folder: { path: `${fs.mkdtempSync('/tmp/orch-test-')}/plugins/orchestration`, deploy: async (sub: string) => `/plugin/${sub}`, read: async (f: string) => fs.readFileSync(new URL(`../orchestration/${f}`, import.meta.url), 'utf8') },
     verbs: {
       handle: (name: string, fn: (a: Record<string, unknown>, ctx: unknown) => Promise<unknown>) => void handlers.set(name, fn),
-      run: async (name: string, argv: string[]) => {
-        assert.equal(name, 'slcode.new');
-        calls.push(parseArgs(slcodeNew, argv));
+      run: async (name: string, argv: string[], ctx: { cwd: string }) => {
+        assert.equal(name, 'slcode.team');
+        const a = parseArgs(slcodeTeam, argv);
+        calls.push(a);
         if (failWith !== null) throw new Error(failWith);
-        return `sid${nextSession++}`;
+        const id = `sid${nextSession++}`;
+        worktrees.set(id, teamWorktree(ctx.cwd, String(a.worktree)));
+        return id;
       },
     },
     plugins: {
       get: (id: string) => id === 'slcode-plugin'
         ? { run: async (args: string[]) => { cli.push(args); return addFails ? { code: 1, stdout: '', stderr: 'error: needs superlite' } : { code: 0, stdout: '', stderr: '' }; } }
         : id === 'slcode'
-          ? { mail: async (m: { to: string; text: string; from?: string }) => { if (mailFails) throw new Error('session is gone'); mails.push(m); }, close: async () => {} }
+          ? {
+              mail: async (m: { to: string; text: string; from?: string }) => { if (mailFails) throw new Error('session is gone'); mails.push(m); },
+              close: async () => {},
+              cleanWorktree: async (c: { self: string; key?: string }) => {
+                cleans.push(c);
+                const dir = worktrees.get(c.self);
+                if (dir === undefined) throw new Error(`session ${c.self} has no worktree made by slcode team new --worktree`);
+                if (loss !== null && c.key !== loss.key) return { removed: false, ...loss };
+                removeTeamWorktree(dir);
+                return { removed: true, path: dir };
+              },
+            }
           : undefined,
     },
   };
   await activate(api as never);
   const ctx = { cwd: repo, tmux: '%1', env: {} };
   const asSession = (sid: string) => ({ ...ctx, env: { SLCODE_SESSION_ID: sid } });
-  return { repo, asSession, calls, cli, mails, store, exposed, run: (verb: string, a: Record<string, unknown>, c: unknown = ctx) => handlers.get(verb)!(a, c) };
+  return { repo, asSession, calls, cli, mails, cleans, store, exposed, handlers, run: (verb: string, a: Record<string, unknown>, c: unknown = ctx) => handlers.get(verb)!(a, c) };
 }
 
 const DEFAULT_NAMES = ['master-orchestrator', 'sub-orchestrator', 'worker'];
@@ -76,26 +95,31 @@ test('켤 때 애드온을 싣고, uninstall 은 애드온을 지운다', async 
   assert.deepEqual(h.cli.at(-1), ['remove', 'orchestration']);
 });
 
-test('--param 으로 역할을 넘기고 첫 프롬프트는 지시문만', async () => {
+test('이 세션의 teammate 로 브랜치 이름의 worktree 에 띄우고, 역할은 --param, 첫 프롬프트는 지시문만', async () => {
   const h = await harness();
-  assert.match(String(await h.run('orchestrate.new', { role: 'worker', branch: 'feat/x', prompt: ['do', 'it'] })), new RegExp(`^sid1 feat/x ${h.repo}\\.worktrees/feat-x`));
+  assert.match(String(await h.run('orchestrate.new', { role: 'worker', branch: 'feat/x', prompt: ['do', 'it'] }, h.asSession('L'))), new RegExp(`^sid1 feat/x ${h.repo}\\.worktrees/feat-x \\(worker, anthropic:opus\\)$`));
   assert.equal(h.calls.length, 1);
-  assert.equal(h.calls[0].param, 'ORCH_ROLE=worker');
-  assert.equal(h.calls[0].mode, 'bypassPermissions');
-  assert.equal(h.calls[0].prompt, 'do it');
-  assert.equal((h.store.get('workers') as Record<string, { session: string }>)[`${h.repo}.worktrees/feat-x`].session, 'sid1');
+  const c = h.calls[0];
+  assert.deepEqual([c.leader, c.teammate, c.worktree, c.name, c.subagent, c.detached, c.cwd], ['L', true, 'feat/x', 'feat/x', false, false, undefined]);
+  assert.equal(c.param, 'ORCH_ROLE=worker');
+  assert.equal(c.mode, 'bypassPermissions');
+  assert.equal(c.prompt, 'do it');
+  assert.equal((h.store.get('workers') as Record<string, { parent: string }>).sid1.parent, 'L');
+  assert.equal(git(h.repo, 'config', 'branch.feat/x.slcodeparent'), 'main');
 });
 
-test('애드온을 실을 수 없으면 워크트리를 만들기 전에 거부한다 (켤 때는 동사가 산다)', async () => {
+test('애드온을 실을 수 없으면 띄우기 전에 거부한다 (켤 때는 동사가 산다)', async () => {
   const h = await harness({ addFails: true });
-  await assert.rejects(h.run('orchestrate.new', { role: 'sub-orchestrator', branch: 'feat/x', prompt: ['x'] }), /orchestration addon: error: needs superlite/);
+  await assert.rejects(h.run('orchestrate.new', { role: 'sub-orchestrator', branch: 'feat/x', prompt: ['x'] }, h.asSession('L')), /orchestration addon: error: needs superlite/);
   assert.equal(h.calls.length, 0);
 });
 
-test('slcode 실패는 워크트리 자리와 함께 알린다', async () => {
-  const h = await harness({ failWith: 'no superlite window has this terminal open' });
-  await assert.rejects(h.run('orchestrate.new', { role: 'worker', branch: 'feat/x', prompt: ['x'] }), /workspace created \(.*\.worktrees\/feat-x\) but the slcode session failed: no superlite window/);
-  assert.equal(h.calls.length, 1);
+test('일반 터미널의 new 는 거절하고, slcode.team 의 거절(Windows 등)은 그대로 보인다', async () => {
+  const h = await harness({ failWith: 'slcode.team is not available on Windows yet' });
+  await assert.rejects(h.run('orchestrate.new', { role: 'worker', branch: 'feat/x', prompt: ['x'] }), /only inside a slcode session/);
+  assert.equal(h.calls.length, 0);
+  await assert.rejects(h.run('orchestrate.new', { role: 'worker', branch: 'feat/x', prompt: ['x'] }, h.asSession('L')), /^Error: slcode.team is not available on Windows yet$/);
+  assert.equal(h.store.get('workers'), undefined);
 });
 
 test('enter: 역할 이름과 안내를 주고 역할을 적는다, 모르는 역할은 빈 안내', async () => {
@@ -110,7 +134,8 @@ test('enter: 역할 이름과 안내를 주고 역할을 적는다, 모르는 �
   assert.equal(h.store.get('role:s1'), 'worker');
   const top = (await enter({ role: 'master-orchestrator' }, 's2')).guide;
   assert.match(top, /another role \(sub-orchestrator\)/);
-  assert.match(top, /superlite orchestrate message <branch>/);
+  assert.match(top, /slcode mail <branch> <message>/);
+  assert.match(top, /with orchestrate new, not slcode team new/);
   // 기본 지침은 역할 설명만 담고, 동사 사용법은 그래프 위치대로 붙는다
   assert.match(top, /milestone 을 만들고 닫는다/);
   assert.match(worker, /지목한 ticket 을 수행한다/);
@@ -126,10 +151,12 @@ test('enter: worker 명령은 실제 부모 기록이 있는 세션에만 안내
   const h = await harness();
   const enter = async (role: string, cwd: string) => JSON.parse(String(await h.run('orchestrate.enter', { role }, { ...h.asSession('s'), cwd }))).guide as string;
   assert.doesNotMatch(await enter('worker', h.repo), /superlite worker/);
-  await h.run('orchestrate.new', { role: 'master-orchestrator', branch: 'feat/m', prompt: ['x'] });
+  await h.run('orchestrate.new', { role: 'master-orchestrator', branch: 'feat/m', prompt: ['x'] }, h.asSession('L'));
   const m = await enter('master-orchestrator', `${h.repo}.worktrees/feat-m`);
   assert.match(m, /superlite worker done/);
-  assert.match(m, /superlite worker message -- <message>/);
+  assert.match(m, /slcode mail leader <message>/);
+  // slcode 가 첫 안내에 넣는 clean-worktree --self 와 어긋나지 않게 — 지우기는 worker done 으로
+  assert.match(m, /not slcode team clean-worktree --self/);
   // 저장소 밖에서도 역할은 정해진다
   const out = fs.mkdtempSync('/tmp/orch-out-');
   assert.match(await enter('worker', out), /Your role is worker\.\n/);
@@ -186,7 +213,7 @@ test('지침 파일: 저장하면 파일에 적고, 편집기가 고친 글을 �
   await assert.rejects(async () => file('../x', 'y'), /role name/);
   await set({ roles: [{ name: 'boss', guide: 'Lead.', x: 12, y: 34 }] });
   assert.equal(fs.existsSync(f), false);
-  assert.deepEqual(await get(), { common: '', roles: [{ name: 'boss', merge: 'squash', separate: false, x: 12, y: 34, guide: 'Lead.' }], edges: [] });
+  assert.deepEqual(await get(), { common: '', roles: [{ name: 'boss', merge: 'squash', x: 12, y: 34, guide: 'Lead.' }], edges: [] });
 });
 
 test('미리 보기: 저장 전 값으로 그래프 위치대로 조각을 주고, 실제 안내와 글이 같다', async () => {
@@ -241,7 +268,7 @@ test('합치기: 역할을 찾지 못하면 합치지 않고 거절한다, 지�
     git(d, 'add', file);
     git(d, 'commit', '-qm', file);
   };
-  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/a', prompt: ['x'] });
+  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/a', prompt: ['x'] }, h.asSession('L'));
   const a = `${h.repo}.worktrees/feat-a`;
   work(a, 'a.txt');
   const main0 = git(h.repo, 'rev-parse', 'main');
@@ -259,9 +286,9 @@ test('합치기: 역할을 찾지 못하면 합치지 않고 거절한다, 지�
   await assert.rejects(h.run('worker.done', { submit: true, message: 'm' }, inA('W')), refused);
   assert.deepEqual([git(h.repo, 'rev-parse', 'main'), git(a, 'rev-parse', 'HEAD')], [main0, head0]);
   assert.equal(fs.existsSync(a), true);
-  // 역할이 없어도 sync 는 되고, 잃을 것이 있는 지우기는 기존 사유로 거절한다
+  // 역할이 없어도 sync 는 되고, 지우기는 slcode 에 맡긴다
   assert.match(String(await h.run('worker.sync', {}, inA('none'))), /already up to date/);
-  await assert.rejects(h.run('worker.done', { close: true }, inA('none')), /commits not in main/);
+  await assert.rejects(h.run('worker.done', { close: true }, inA('none')), /session none has no worktree/);
   // 역할을 다시 정하면 합쳐진다
   await h.exposed.roles.set(cfg);
   await h.run('orchestrate.enter', { role: 'worker' }, inA('W'));
@@ -270,7 +297,7 @@ test('합치기: 역할을 찾지 못하면 합치지 않고 거절한다, 지�
 
 test('제출: 이 브랜치가 맡은 ticket 의 Ticket trailer 를 합친 커밋에 붙이고 출력에 알린다', async () => {
   const h = await harness();
-  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/t', prompt: ['x'] });
+  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/t', prompt: ['x'] }, h.asSession('L'));
   const d = `${h.repo}.worktrees/feat-t`;
   git(d, 'config', 'user.name', 't');
   git(d, 'config', 'user.email', 't@t');
@@ -288,37 +315,48 @@ test('제출: 이 브랜치가 맡은 ticket 의 Ticket trailer 를 합친 커�
   assert.equal(git(h.repo, 'log', '-1', '--format=%B', 'main'), `feat: t\n\nTicket: ${id}`);
 });
 
-test('메시지: 부모와 직접 띄운 자식 사이에만 오간다', async () => {
+test('완료 보고: 합치고 slcode 로 지운 뒤 띄운 세션에 알리고 이 세션을 닫는다, 메시지 동사는 없다', async () => {
   const h = await harness();
-  const lead = { ...h.asSession('L') };
-  await h.run('orchestrate.new', { role: 'sub-orchestrator', branch: 'dev/a', prompt: ['x'] }, lead);
-  const a = `${h.repo}.worktrees/a/dev-a`;
-  // 자식 → 부모
-  assert.equal(await h.run('worker.message', { text: ['need', 'a', 'decision'] }, { ...h.asSession('sid1'), cwd: a }), 'sent to L');
-  assert.deepEqual(h.mails.at(-1), { to: 'L', text: '[from dev/a] need a decision', from: 'sid1' });
-  // 부모 → 직접 띄운 자식
-  assert.equal(await h.run('orchestrate.message', { branch: 'dev/a', text: ['go'] }, lead), 'sent to sid1');
-  assert.deepEqual(h.mails.at(-1), { to: 'sid1', text: '[from main] go', from: 'L' });
-  // 손자에게는 못 보낸다
-  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/b', prompt: ['x'] }, { ...h.asSession('sid1'), cwd: a });
-  await assert.rejects(h.run('orchestrate.message', { branch: 'feat/b', text: ['x'] }, lead), /did not start feat\/b \(it started: dev\/a\)/);
-  await assert.rejects(h.run('orchestrate.message', { branch: 'dev/a', text: ['x'] }, h.asSession('other')), /did not start dev\/a \(it started: nothing\)/);
-  await assert.rejects(h.run('orchestrate.message', { branch: 'dev/a', text: ['x'] }), /only a slcode session/);
-  // orchestrate new 로 맺지 않았으면 worker message 는 보낼 곳이 없다
-  await assert.rejects(h.run('worker.message', { text: ['x'] }, h.asSession('L')), /not started by another slcode session/);
-  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/c', prompt: ['x'] });
-  await assert.rejects(h.run('worker.message', { text: ['x'] }, { ...h.asSession('sid3'), cwd: `${h.repo}.worktrees/feat-c` }), /not started by another slcode session/);
-  await assert.rejects(h.run('orchestrate.message', { branch: 'dev/a', text: [' '] }, lead), /message is empty/);
+  assert.equal(h.handlers.has('orchestrate.message') || h.handlers.has('worker.message'), false);
+  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/a', prompt: ['x'] }, h.asSession('L'));
+  const a = `${h.repo}.worktrees/feat-a`;
+  const at = { ...h.asSession('sid1'), cwd: a };
+  await h.run('orchestrate.enter', { role: 'worker' }, at);
+  fs.writeFileSync(`${a}/a.txt`, 'a\n');
+  git(a, 'add', 'a.txt');
+  git(a, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'a');
+  // 이 세션 밖(일반 터미널)에서는 지우지 못한다
+  await assert.rejects(h.run('worker.done', { close: true }, { ...at, env: {} }), /only the slcode session of this workspace can remove it\. Nothing was changed/);
+  assert.equal(h.cleans.length, 0);
+  assert.match(String(await h.run('worker.done', { submit: true, close: true, message: 'feat: a\n\nbody' }, at)), /^feat\/a: landed\nmerged into main as \w+ \(squash\)\nreported to L\nthis session closes now$/);
+  assert.deepEqual(h.cleans, [{ self: 'sid1', key: undefined }]);
+  assert.deepEqual(h.mails, [{ to: 'L', text: '[worker done] feat/a: landed — feat: a', from: 'sid1' }]);
+  assert.equal(fs.existsSync(a), false);
+  assert.equal(h.store.get('role:sid1'), undefined);
+  assert.equal((h.store.get('workers') as Record<string, unknown>).sid1, undefined);
 });
 
-test('메시지: 받을 세션이 꺼졌으면 사유를 돌려준다', async () => {
+test('지우기: slcode 가 잃을 작업을 찾으면 그 키로 --abandon 을 안내하고, 그 키로 버린다', async () => {
+  const h = await harness({ loss: { reasons: ['uncommitted changes in /r.worktrees/feat-a', 'commits on feat/a not in main'], key: 'k1234' } });
+  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/a', prompt: ['x'] }, h.asSession('L'));
+  const a = `${h.repo}.worktrees/feat-a`;
+  const at = { ...h.asSession('sid1'), cwd: a };
+  await assert.rejects(h.run('worker.done', { close: true }, at), /^Error: not removed: uncommitted changes in \/r\.worktrees\/feat-a; commits on feat\/a not in main\. Hand it in with --submit, or discard it \(after the user confirms\) with: superlite worker done --abandon k1234$/);
+  assert.equal(fs.existsSync(a), true);
+  assert.deepEqual(h.mails, []);
+  assert.match(String(await h.run('worker.done', { abandon: 'k1234' }, at)), /^feat\/a: abandoned\nreported to L\nthis session closes now$/);
+  assert.deepEqual(h.cleans.at(-1), { self: 'sid1', key: 'k1234' });
+  assert.equal(fs.existsSync(a), false);
+});
+
+test('완료 보고: 띄운 세션이 꺼졌으면 사유를 출력에 남긴다', async () => {
   const h = await harness({ mailFails: true });
-  const lead = h.asSession('L');
-  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/a', prompt: ['x'] }, lead);
-  await assert.rejects(h.run('orchestrate.message', { branch: 'feat/a', text: ['x'] }, lead), /session is gone/);
+  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/a', prompt: ['x'] }, h.asSession('L'));
+  const at = { ...h.asSession('sid1'), cwd: `${h.repo}.worktrees/feat-a` };
+  assert.match(String(await h.run('worker.done', { close: true }, at)), /^feat\/a: closed\nnot reported to L: session is gone\nthis session closes now$/);
 });
 
-test('합류 방식과 폴더 분리는 역할 설정을 따른다', async () => {
+test('합류 방식은 역할 설정을 따른다', async () => {
   const h = await harness();
   const inDir = (cwd: string, sid: string) => ({ ...h.asSession(sid), cwd });
   const work = (d: string, file: string) => {
@@ -328,25 +366,25 @@ test('합류 방식과 폴더 분리는 역할 설정을 따른다', async () =>
     git(d, 'add', file);
     git(d, 'commit', '-qm', file);
   };
-  // 기본값: sub-orchestrator 는 자기 폴더에 merge commit, worker 는 같은 폴더에 squash
-  await h.run('orchestrate.new', { role: 'sub-orchestrator', branch: 'dev/minor', prompt: ['x'] });
-  const lead = `${h.repo}.worktrees/minor/dev-minor`;
-  await h.run('orchestrate.enter', { role: 'sub-orchestrator' }, inDir(lead, 'L'));
-  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/a', prompt: ['x'] }, inDir(lead, 'L'));
-  const a = `${h.repo}.worktrees/minor/feat-a`;
+  // 기본값: sub-orchestrator 는 merge commit, worker 는 squash. 자리는 모두 <repo>.worktrees/ 한 층이다
+  await h.run('orchestrate.new', { role: 'sub-orchestrator', branch: 'dev/minor', prompt: ['x'] }, h.asSession('M'));
+  const lead = `${h.repo}.worktrees/dev-minor`;
+  await h.run('orchestrate.enter', { role: 'sub-orchestrator' }, inDir(lead, 'sid1'));
+  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/a', prompt: ['x'] }, inDir(lead, 'sid1'));
+  const a = `${h.repo}.worktrees/feat-a`;
   work(a, 'a.txt');
-  await h.run('orchestrate.enter', { role: 'worker' }, inDir(a, 'W'));
-  assert.match(String(await h.run('worker.done', { submit: true, message: 'feat: a' }, inDir(a, 'W'))), /feat\/a: submitted\nmerged into dev\/minor as \w+ \(squash\)/);
-  assert.match(String(await h.run('worker.done', { submit: true, message: 'merge minor' }, inDir(lead, 'L'))), /\(no-ff\)/);
+  await h.run('orchestrate.enter', { role: 'worker' }, inDir(a, 'sid2'));
+  assert.match(String(await h.run('worker.done', { submit: true, message: 'feat: a' }, inDir(a, 'sid2'))), /feat\/a: submitted\nmerged into dev\/minor as \w+ \(squash\)\nreported to sid1$/);
+  assert.match(String(await h.run('worker.done', { submit: true, message: 'merge minor' }, inDir(lead, 'sid1'))), /\(no-ff\)\nreported to M$/);
   assert.equal(git(h.repo, 'log', '-1', '--format=%P', 'main').split(' ').length, 2);
   // 탭에서 바꾸면 그 값을 쓴다
   const cfg = (await h.exposed.roles.get()) as { roles: Record<string, unknown>[] };
   cfg.roles[2].merge = 'no-ff';
-  cfg.roles[2].separate = true;
   await h.exposed.roles.set(cfg);
-  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/b', prompt: ['x'] });
-  const b = `${h.repo}.worktrees/b/feat-b`;
+  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/b', prompt: ['x'] }, h.asSession('M'));
+  const b = `${h.repo}.worktrees/feat-b`;
   work(b, 'b.txt');
-  assert.match(String(await h.run('worker.done', { submit: true, close: true, message: 'feat: b' }, inDir(b, 'W'))), /feat\/b: landed\nmerged into main as \w+ \(no-ff\)/);
+  await h.run('orchestrate.enter', { role: 'worker' }, inDir(b, 'sid3'));
+  assert.match(String(await h.run('worker.done', { submit: true, close: true, message: 'feat: b' }, inDir(b, 'sid3'))), /feat\/b: landed\nmerged into main as \w+ \(no-ff\)/);
   assert.equal(fs.existsSync(b), false);
 });

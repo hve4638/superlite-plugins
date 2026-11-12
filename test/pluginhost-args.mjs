@@ -1,5 +1,5 @@
 // superlite 데몬 pluginhost.mjs 의 verbs 인자 해석 사본 (code-superlight 61b4f8c backend/daemon/src/pluginhost.mjs 46-117행).
-// orchestrationParam 테스트가 slcode.new 인자를 해석하는 데 쓴다. 호스트 쪽이 바뀌면 함께 맞춘다.
+// orchestrationParam 테스트가 slcode.team 인자를 해석하는 데 쓴다. 호스트 쪽이 바뀌면 함께 맞춘다.
 function argSyntax(a) {
   const inner =
     a.kind === 'positional' ? `<${a.name}${a.variadic ? '...' : ''}>`
