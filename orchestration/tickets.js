@@ -6,6 +6,8 @@
 // WAL·busy_timeout 으로 여러 세션이 동시에 써도 트랜잭션이 막아 준다. 스키마 판은 PRAGMA user_version, 열 때 옮긴다.
 // 시각은 ISO 8601 UTC 문자열(toISOString). id 앞자리만 로컬 날짜다.
 // assignee·log 의 session 칸에는 워커의 브랜치 이름을 적는다 (lead-plugin 2026-11-09: SLCODE_SESSION_ID 는 tmux 안 워커에 없고 다시 띄우면 바뀐다).
+// 스키마 2판(ticket orchestration-ticket-claim): ticket_assignee.session_id 는 ticket claim 한 slcode 세션 id 다. 없으면 NULL 이고, worker done --close 가 비운다.
+// 살아 있음(live·missing)은 저장하지 않는다 — 읽을 때 ticketVerbs.js 의 assigneeLive 가 slcode 세션 목록과 견준다. 이 파일은 slcode 를 모른다.
 // milestone_ticket.auto=1 은 done 이 계획 밖 ticket 을 다음 milestone 에 붙인 줄이다.
 // node:sqlite 는 Node 22.5 이상에만 있어 openStore 안에서 불러온다 — 옛 Node 에서도 orchestration 의 다른 동사는 산다.
 
@@ -46,6 +48,8 @@ const SCHEMA = [
     released  TEXT
   );
   CREATE TABLE milestone_ticket (milestone TEXT NOT NULL REFERENCES milestone(id), ticket TEXT NOT NULL REFERENCES ticket(id), auto INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (milestone, ticket));`,
+  // 2
+  'ALTER TABLE ticket_assignee ADD COLUMN session_id TEXT',
 ];
 
 // ---- 찾기·열기
@@ -243,6 +247,12 @@ export function createTicket(db, { title, lane = null, priority = 'normal', depe
   });
 }
 
+/** 담당 칸 — assignees 는 브랜치(대시보드·필터가 쓰는 꼴), assigneeSessions 는 같은 순서의 { branch, session(claim 한 세션 id 또는 null) } */
+function assigneeFields(db, id) {
+  const rows = db.prepare('SELECT session, session_id FROM ticket_assignee WHERE ticket = ? ORDER BY session').all(id);
+  return { assignees: rows.map((r) => r.session), assigneeSessions: rows.map((r) => ({ branch: r.session, session: r.session_id })) };
+}
+
 /** 한 ticket 의 전부 — 칸, depends·dependents(그 ticket 을 기다리는 것), assignee, repo, milestone(직접 붙은 것), 진행 기록 */
 export function getTicket(db, id) {
   const t = mustTicket(db, id);
@@ -251,7 +261,7 @@ export function getTicket(db, id) {
     ...t,
     depends: col('SELECT t.id, t.title, t.status FROM ticket_depends d JOIN ticket t ON t.id = d.depends WHERE d.ticket = ? ORDER BY t.id'),
     dependents: col('SELECT t.id, t.title, t.status FROM ticket_depends d JOIN ticket t ON t.id = d.ticket WHERE d.depends = ? ORDER BY t.id'),
-    assignees: col('SELECT session FROM ticket_assignee WHERE ticket = ? ORDER BY session').map((r) => r.session),
+    ...assigneeFields(db, id),
     repos: col('SELECT repo FROM ticket_repo WHERE ticket = ? ORDER BY repo').map((r) => r.repo),
     milestones: col('SELECT m.id, m.title, m.status, mt.auto FROM milestone_ticket mt JOIN milestone m ON m.id = mt.milestone WHERE mt.ticket = ? ORDER BY m.ord'),
     log: col('SELECT at, session, text FROM ticket_log WHERE ticket = ? ORDER BY at, rowid'),
@@ -269,8 +279,7 @@ export function listTickets(db, { lane = null, status = null, assignee = null, m
     const scope = new Set(milestoneScope(db, milestone).map((t) => t.id));
     rows = rows.filter((t) => scope.has(t.id));
   }
-  const who = db.prepare('SELECT session FROM ticket_assignee WHERE ticket = ? ORDER BY session');
-  rows = rows.map((t) => ({ ...t, assignees: who.all(t.id).map((r) => r.session) }));
+  rows = rows.map((t) => ({ ...t, ...assigneeFields(db, t.id) }));
   return assignee === null ? rows : rows.filter((t) => t.assignees.includes(assignee));
 }
 
@@ -308,6 +317,21 @@ export function updateTicket(db, id, { fields = {}, add = {}, remove = {} } = {}
     return fields.status === undefined ? null : applyStatus(db, t, fields.status);
   });
   return { attached: result, released };
+}
+
+/** ticket claim — branch 를 담당에 더하고(이미 있으면 세션 id 만 새 값으로) open·hold 면 active 로 바꾼다. session 은 slcode 세션 id 또는 null. 끝난 ticket 은 거절한다 */
+export function claimTicket(db, id, branch, session) {
+  tx(db, () => {
+    const t = mustTicket(db, id);
+    if (isFinished(t.status)) throw new Error(`ticket ${id} is ${t.status}: only an unfinished ticket can be claimed`);
+    db.prepare('INSERT INTO ticket_assignee (ticket, session, session_id) VALUES (?, ?, ?) ON CONFLICT (ticket, session) DO UPDATE SET session_id = excluded.session_id').run(id, branch, session);
+    applyStatus(db, t, 'active'); // active 가 되어도 끝난 것은 늘지 않아 릴리스 가능은 그대로다
+  });
+}
+
+/** worker done --close·--abandon — 그 브랜치 담당의 세션 id 만 비운다. 브랜치는 이력으로 남는다 */
+export function clearAssigneeSessions(db, branch) {
+  tx(db, () => db.prepare('UPDATE ticket_assignee SET session_id = NULL WHERE session = ?').run(branch));
 }
 
 /** 진행 기록 한 줄 — session 은 쓴 워커의 브랜치 (모르면 null) */

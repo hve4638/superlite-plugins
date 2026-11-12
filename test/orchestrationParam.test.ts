@@ -315,6 +315,37 @@ test('제출: 이 브랜치가 맡은 ticket 의 Ticket trailer 를 합친 커�
   assert.equal(git(h.repo, 'log', '-1', '--format=%B', 'main'), `feat: t\n\nTicket: ${id}`);
 });
 
+test('ticket claim: --submit 은 ticket 을 done 으로 바꾸지 않고, --close 는 이 브랜치 담당의 세션 id 만 비운다', async () => {
+  const h = await harness();
+  await h.run('orchestrate.new', { role: 'worker', branch: 'feat/c', prompt: ['x'] }, h.asSession('L'));
+  const d = `${h.repo}.worktrees/feat-c`;
+  const dbFile = `${fs.realpathSync(fs.mkdtempSync('/tmp/orch-claim-'))}/tickets.db`;
+  let db = await tickets.openStore(dbFile);
+  const id = tickets.createTicket(db, { title: 't' });
+  tickets.claimTicket(db, id, 'feat/c', 'sid1');
+  tickets.claimTicket(db, id, 'feat/o', 'sidO');
+  db.close();
+  const at = { cwd: d, tmux: '%1', env: { SLCODE_SESSION_ID: 'sid1', TICKET_PATH: dbFile } };
+  await h.run('orchestrate.enter', { role: 'worker' }, at);
+  fs.writeFileSync(`${d}/c.txt`, 'c\n');
+  git(d, 'add', 'c.txt');
+  git(d, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'c');
+  await h.run('worker.done', { submit: true, message: 'feat: c' }, at);
+  const read = async () => {
+    db = await tickets.openStore(dbFile);
+    try {
+      return tickets.getTicket(db, id);
+    } finally {
+      db.close();
+    }
+  };
+  assert.equal((await read()).status, 'active');
+  assert.match(String(await h.run('worker.done', { close: true }, at)), /^feat\/c: closed\nreported to L\nthis session closes now$/);
+  const t = await read();
+  assert.equal(t.status, 'active');
+  assert.deepEqual(t.assigneeSessions, [{ branch: 'feat/c', session: null }, { branch: 'feat/o', session: 'sidO' }]);
+});
+
 test('완료 보고: 합치고 slcode 로 지운 뒤 띄운 세션에 알리고 이 세션을 닫는다, 메시지 동사는 없다', async () => {
   const h = await harness();
   assert.equal(h.handlers.has('orchestrate.message') || h.handlers.has('worker.message'), false);

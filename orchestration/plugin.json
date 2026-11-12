@@ -48,7 +48,7 @@
       "name": "ticket",
       "visibility": "advertise",
       "description": "Ticket and milestone store for orchestration. Run `superlite ticket --help` for subcommands.",
-      "help": "Ticket commands: new, ls, show, set, edit, log, done, drop, milestone, root. superlite ticket lists them with one line each; superlite ticket <command> --help explains its arguments"
+      "help": "Ticket commands: new, ls, show, claim, set, edit, log, done, drop, milestone, root. superlite ticket lists them with one line each; superlite ticket <command> --help explains its arguments"
     },
     {
       "name": "ticket.new",
@@ -68,7 +68,7 @@
     {
       "name": "ticket.ls",
       "visibility": "hidden",
-      "help": "List tickets (unfinished ones unless --status says otherwise)",
+      "help": "List tickets (unfinished ones unless --status says otherwise); an assignee ends with * when its claiming session is live and ? when that session is gone",
       "args": [
         { "name": "status", "kind": "option", "value": "s", "help": "open | active | hold | done | dropped, comma-separated, or all" },
         { "name": "lane", "kind": "option" },
@@ -80,6 +80,12 @@
       "name": "ticket.show",
       "visibility": "hidden",
       "help": "Show a ticket: fields, todo, reason, log, dependencies and the commits with its Ticket: trailer",
+      "args": [{ "name": "id", "kind": "positional", "required": true, "help": "ticket id" }]
+    },
+    {
+      "name": "ticket.claim",
+      "visibility": "hidden",
+      "help": "Take a ticket before working on it: adds this folder's branch and slcode session as an assignee, marks it active and prints it like show",
       "args": [{ "name": "id", "kind": "positional", "required": true, "help": "ticket id" }]
     },
     {

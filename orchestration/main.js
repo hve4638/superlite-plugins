@@ -3,7 +3,7 @@
 //   superlite orchestrate new <역할> <브랜치> [--preset <이름>] -- <지시문>
 //   superlite worker sync
 //   superlite worker done --submit [--close] --message <m> | --close | --abandon <키>
-//   superlite ticket new|ls|show|set|edit|log|done|drop|milestone|root       (ticket 저장소, ticketVerbs.js·tickets.js)
+//   superlite ticket new|ls|show|claim|set|edit|log|done|drop|milestone|root (ticket 저장소, ticketVerbs.js·tickets.js)
 //   (ticket 동사를 친 셸의 카드에 맡은 ticket 알약을 붙인다 — ticketFloat.js, views/tickets.js)
 //
 // 역할과 연결선은 사용자가 탭에서 그린다(views/roles.js, storage config). 선의 뜻은 "이 역할이 저 역할을 시작할 수 있다" 하나다 (사용자 2026-11-04).
@@ -26,6 +26,7 @@
 // 끝나면 자기를 띄운 세션(new 때의 리더)에 slcode.mail 로 알리고, 자리를 정리했으면 자기 세션을 slcode.close 로 닫는다 — 닫기는 맨 마지막, 이 동사의 결과가 셸에 돌아간 뒤
 // (지운 폴더에 세션이 잠깐 남는다. 데몬 쪽 main 이라 PATH 무관).
 // --submit 은 이 브랜치가 assignee 인 끝나지 않은 ticket 마다 메시지 끝에 `Ticket: <id>` trailer 를 붙인다 (ticket orchestration-commit-trailer, 사용자 2026-11-10: 지침만도, 거절도 아닌 자동 추가).
+// --close·--abandon 은 자리를 지운 뒤 이 브랜치 담당의 ticket claim 세션 id 를 비운다 (브랜치는 이력). --submit 은 ticket 을 done 으로 바꾸지 않는다 — 완료는 leader 가 한다 (사용자 2026-11-13).
 // done 은 나중에 ticket 자동 처리를 붙일 입구라 merge·land 동사를 따로 두지 않는다.
 //
 // 새 방식 플러그인(plugin.json apiVersion 2) — 이 main 은 창이 아니라 세션 머신의 node 에서 돈다. git 은 워크트리가 있는
@@ -34,7 +35,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { exposeTicketFloat, withTicketFloat } from './ticketFloat.js';
-import { handleTicketVerbs, withTicketTrailers } from './ticketVerbs.js';
+import { clearTicketSessions, existingStore, handleTicketVerbs, withTicketTrailers } from './ticketVerbs.js';
 import * as worktree from './worktree.js';
 
 /** preset → model 기본 배정 — 설정 `assign` 이 덮는다 */
@@ -48,7 +49,8 @@ const DEFAULT_ASSIGN = {
 
 const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
 
-const WORKER_VERBS = `- Catch up with the parent branch: superlite worker sync
+const WORKER_VERBS = `- Claim each ticket you were given before you start on it (marks it active, records this branch and session, prints the ticket): superlite ticket claim <id>
+- Catch up with the parent branch: superlite worker sync
 - Hand in your work (merge into the parent, keep this workspace): superlite worker done --submit --message "<commit title>"
 - Hand in and remove this workspace, closing this session: superlite worker done --submit --close --message "<commit title>"
 - Remove this workspace when nothing is left unmerged: superlite worker done --close
@@ -270,6 +272,7 @@ export async function activate(api) {
     }
     const outcome = submit && close ? 'landed' : submit ? 'submitted' : close ? 'closed' : 'abandoned';
     const trailed = submit ? await withTicketTrailers(ctx, branch, message) : { note: '' };
+    const ticketStore = removed ? existingStore(ctx) : null; // 지우기 전에 — 지운 cwd 에서는 그 안의 .ticket 을 못 찾는다
     const merged = submit ? await worktree.submit(w, me?.merge, trailed.message, close) : ''; // me 가 null 이면 부모 기록이 없는 경우뿐이고, submit 이 그 사유로 거절한다
     // 합친 뒤에 지우므로 slcode 의 유실 판단(부모 브랜치에 반영됐나)이 새 상태를 본다. 확인 키도 slcode 것이다
     if (removed) {
@@ -286,7 +289,7 @@ export async function activate(api) {
         await api.storage.set('workers', workers);
       }
     }
-    const lines = [`${branch}: ${outcome}`, merged, trailed.note];
+    const lines = [`${branch}: ${outcome}`, merged, trailed.note, await clearTicketSessions(ticketStore, branch)];
 
     // 자기를 띄운 세션에 알린다 — 그 세션이 꺼졌으면 알리지 못한 까닭만 출력에 남긴다
     const parent = rec?.parent ?? null;

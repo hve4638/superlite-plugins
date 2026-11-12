@@ -2,9 +2,10 @@
 
 ## 착수
 
-1. ticket 마다 `superlite ticket show <id>` 로 todo, reason, 선행 ticket 의 상태를 확인한다. reason 이 가리키는 자료도 읽는다.
-2. 끝나지 않은 선행 ticket 이 남아 있으면 그 id 를 이 세션을 띄운 세션에 메시지로 보내고 멈춘다.
-3. `superlite ticket set <id> status=active assignee+=<이 브랜치>` 로 맡았음을 적고, todo 의 작업을 수행한다. 제출할 때 이 assignee 로 Ticket trailer 가 붙는다.
+1. ticket 마다 `superlite ticket claim <id>` 로 시작한다. 이 명령은 ticket 을 active 로 바꾸고 이 브랜치와 세션을 담당으로 적은 뒤 ticket 을 출력한다.
+2. 출력에서 todo, reason, 선행 ticket 의 상태를 확인한다. reason 이 가리키는 자료도 읽는다.
+3. 끝나지 않은 선행 ticket 이 남아 있으면 그 id 를 이 세션을 띄운 세션에 메시지로 보내고 멈춘다.
+4. todo 의 작업을 수행한다. 제출할 때 이 담당으로 Ticket trailer 가 붙는다.
 
 ## 범위
 
@@ -24,4 +25,4 @@
 ## 종료
 
 - 완료 여부, 산출물, 남은 문제를 이 세션을 띄운 세션에 메시지로 보낸다.
-- ticket 을 닫는 일(`superlite ticket done`)은 이 세션을 띄운 세션이 한다.
+- 제출은 ticket 을 닫지 않는다. ticket 을 닫는 일(`superlite ticket done`)은 이 세션을 띄운 세션이 한다.

@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as store from '../orchestration/tickets.js';
-import { handleTicketVerbs, parseEditText, editText, addTicketTrailers, withTicketTrailers } from '../orchestration/ticketVerbs.js';
+import { handleTicketVerbs, parseEditText, editText, addTicketTrailers, withTicketTrailers, assigneeLive, clearTicketSessions } from '../orchestration/ticketVerbs.js';
 import { parseArgs } from './pluginhost-args.mjs';
 
 const tmp = () => fs.realpathSync(fs.mkdtempSync('/tmp/orch-ticket-'));
@@ -26,23 +26,118 @@ test('찾기: TICKET_PATH 가 먼저, 없으면 위로 올라가며 처음 만�
   assert.throws(() => store.findStore(`${root}/a/b`), /\.ticket is empty/);
 });
 
-test('열기: 없으면 만들고 .superlite/.gitignore 를 두며, WAL·user_version 1. 더 새 스키마는 거절한다', async () => {
+test('열기: 없으면 만들고 .superlite/.gitignore 를 두며, WAL·user_version 2. 더 새 스키마는 거절한다', async () => {
   const dir = tmp();
   const file = `${dir}/.superlite/tickets.db`;
   let db = await store.openStore(file);
   assert.equal(fs.readFileSync(`${dir}/.superlite/.gitignore`, 'utf8'), '*\n');
   assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'wal');
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 1);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2);
   db.close();
   fs.writeFileSync(`${dir}/.superlite/.gitignore`, 'kept\n');
   db = await store.openStore(file);
   db.exec('PRAGMA user_version = 9');
   db.close();
   assert.equal(fs.readFileSync(`${dir}/.superlite/.gitignore`, 'utf8'), 'kept\n');
-  await assert.rejects(store.openStore(file), /schema 9, newer than this plugin knows \(1\)/);
+  await assert.rejects(store.openStore(file), /schema 9, newer than this plugin knows \(2\)/);
   // .superlite 가 아닌 폴더에는 .gitignore 를 두지 않는다
   (await store.openStore(`${dir}/other/t.db`)).close();
   assert.equal(fs.existsSync(`${dir}/other/.gitignore`), false);
+});
+
+test('스키마 1판 DB 를 열면 2판으로 옮기고, 기존 담당은 세션 id 없이 브랜치만 남는다', async () => {
+  const file = `${tmp()}/tickets.db`;
+  const { DatabaseSync } = await import('node:sqlite');
+  const v1 = new DatabaseSync(file);
+  // 1판 그대로 — tickets.js 의 SCHEMA[0] 에서 이 테스트가 쓰는 칸만
+  v1.exec(`CREATE TABLE ticket (id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('open','active','hold','done','dropped')), priority TEXT NOT NULL DEFAULT 'normal', lane TEXT, todo TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, closed TEXT);
+    CREATE TABLE ticket_depends (ticket TEXT NOT NULL, depends TEXT NOT NULL, PRIMARY KEY (ticket, depends));
+    CREATE TABLE ticket_assignee (ticket TEXT NOT NULL REFERENCES ticket(id), session TEXT NOT NULL, PRIMARY KEY (ticket, session));
+    CREATE TABLE ticket_repo (ticket TEXT NOT NULL, repo TEXT NOT NULL, PRIMARY KEY (ticket, repo));
+    CREATE TABLE ticket_log (ticket TEXT NOT NULL, at TEXT NOT NULL, session TEXT, text TEXT NOT NULL);
+    CREATE TABLE milestone (id TEXT PRIMARY KEY, title TEXT NOT NULL, ord INTEGER NOT NULL UNIQUE, status TEXT NOT NULL, goal TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, released TEXT);
+    CREATE TABLE milestone_ticket (milestone TEXT NOT NULL, ticket TEXT NOT NULL, auto INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (milestone, ticket));
+    INSERT INTO ticket (id, title, status, created) VALUES ('261101-0001', 'old', 'active', '2026-11-01T00:00:00.000Z');
+    INSERT INTO ticket_assignee (ticket, session) VALUES ('261101-0001', 'feat/old');
+    PRAGMA user_version = 1;`);
+  v1.close();
+  const db = await store.openStore(file);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2);
+  const t = store.getTicket(db, '261101-0001');
+  assert.deepEqual([t.assignees, t.assigneeSessions], [['feat/old'], [{ branch: 'feat/old', session: null }]]);
+  store.claimTicket(db, t.id, 'feat/old', 's1');
+  assert.deepEqual(store.getTicket(db, t.id).assigneeSessions, [{ branch: 'feat/old', session: 's1' }]);
+  db.close();
+});
+
+test('claim: 담당을 더하고 open·hold 를 active 로, 같은 브랜치는 세션 id 만 바꾸고, 끝난 ticket 은 거절한다. 세션 비우기는 그 브랜치만', async () => {
+  const db = await fresh();
+  const a = store.createTicket(db, { title: 'a' });
+  store.claimTicket(db, a, 'feat/x', 's1');
+  const t = store.getTicket(db, a);
+  assert.equal(t.status, 'active');
+  assert.deepEqual(t.assigneeSessions, [{ branch: 'feat/x', session: 's1' }]);
+  store.claimTicket(db, a, 'feat/x', 's2');
+  store.claimTicket(db, a, 'feat/y', null);
+  assert.deepEqual(store.getTicket(db, a).assigneeSessions, [{ branch: 'feat/x', session: 's2' }, { branch: 'feat/y', session: null }]);
+  // set 의 assignee+= 는 claim 한 세션 id 를 건드리지 않는다
+  store.updateTicket(db, a, { add: { assignee: ['feat/x'] } });
+  assert.equal(store.getTicket(db, a).assigneeSessions[0].session, 's2');
+  const b = store.createTicket(db, { title: 'b' });
+  store.updateTicket(db, b, { fields: { status: 'hold' } });
+  store.claimTicket(db, b, 'feat/x', 's2');
+  assert.equal(store.getTicket(db, b).status, 'active');
+  store.clearAssigneeSessions(db, 'feat/x');
+  assert.deepEqual(store.getTicket(db, a).assigneeSessions, [{ branch: 'feat/x', session: null }, { branch: 'feat/y', session: null }]);
+  assert.deepEqual(store.getTicket(db, b).assigneeSessions, [{ branch: 'feat/x', session: null }], '브랜치는 이력으로 남는다');
+  for (const status of ['done', 'dropped']) {
+    const c = store.createTicket(db, { title: status });
+    store.updateTicket(db, c, { fields: { status } });
+    assert.throws(() => store.claimTicket(db, c, 'feat/x', 's1'), new RegExp(`ticket ${c} is ${status}: only an unfinished ticket can be claimed`));
+    assert.deepEqual(store.getTicket(db, c).assignees, []);
+  }
+  assert.throws(() => store.claimTicket(db, 'nope', 'feat/x', 's1'), /unknown ticket: nope/);
+});
+
+test('live·missing: slcode 목록에 있으면 live, 없으면 missing, 세션 id 가 없거나 끝난 ticket·옛 slcode 는 따지지 않는다', async () => {
+  const row = (status: string, ...a: [string, string | null][]) => ({ status, assigneeSessions: a.map(([branch, session]) => ({ branch, session })) });
+  let calls = 0;
+  const api = (list?: () => Promise<unknown>) => ({ plugins: { get: (id: string) => (id === 'slcode' ? { list: list && (async () => { calls++; return list(); }) } : undefined) } }) as never;
+  const alive = async () => [{ id: 's1', state: 'working', live: true }];
+  const tickets = [row('active', ['feat/a', 's1'], ['feat/b', 's2'], ['feat/c', null]), row('done', ['feat/d', 's1'])];
+  assert.deepEqual(await assigneeLive(api(alive), tickets), [
+    [{ branch: 'feat/a', session: 's1', live: true, state: 'working' }, { branch: 'feat/b', session: 's2', live: false, state: null }, { branch: 'feat/c', session: null, live: null, state: null }],
+    [{ branch: 'feat/d', session: 's1', live: null, state: null }],
+  ]);
+  assert.equal(calls, 1);
+  const none = [{ branch: 'feat/a', session: 's1', live: null, state: null }];
+  assert.deepEqual(await assigneeLive(api(), [row('active', ['feat/a', 's1'])]), [none], 'list 가 없는 옛 slcode');
+  assert.deepEqual(await assigneeLive({ plugins: { get: () => undefined } } as never, [row('active', ['feat/a', 's1'])]), [none], 'slcode 플러그인이 없다');
+  const err = console.error;
+  console.error = () => {};
+  try {
+    assert.deepEqual(await assigneeLive(api(async () => { throw new Error('slcode: not found'); }), [row('active', ['feat/a', 's1'])]), [none], '목록을 못 읽으면 표시만 빠진다');
+  } finally {
+    console.error = err;
+  }
+  calls = 0;
+  await assigneeLive(api(alive), [row('active', ['feat/c', null]), row('done', ['feat/d', 's1'])]);
+  assert.equal(calls, 0, '따질 담당이 없으면 slcode 를 부르지 않는다');
+});
+
+test('세션 비우기: 지우기 전에 찾아 둔 저장소에서, 저장소가 없으면 아무것도 않고, 열지 못하면 사유를 돌려준다', async () => {
+  assert.equal(await clearTicketSessions(null, 'feat/x'), '');
+  const file = `${tmp()}/tickets.db`;
+  const db = await store.openStore(file);
+  const a = store.createTicket(db, { title: 'a' });
+  store.claimTicket(db, a, 'feat/x', 's1');
+  db.close();
+  assert.equal(await clearTicketSessions(file, 'feat/x'), '');
+  const again = await store.openStore(file);
+  assert.deepEqual(store.getTicket(again, a).assigneeSessions, [{ branch: 'feat/x', session: null }]);
+  again.exec('PRAGMA user_version = 9');
+  again.close();
+  assert.match(await clearTicketSessions(file, 'feat/x'), /^ticket assignee session not cleared: the ticket DB is schema 9/);
 });
 
 test('동시 쓰기: 여러 프로세스가 없는 DB 를 함께 열고 써도 하나도 잃지 않는다', async () => {
@@ -167,7 +262,9 @@ function harness({ openFails = false } = {}) {
   const handlers = new Map<string, (a: Record<string, unknown>, ctx: unknown) => Promise<unknown>>();
   const opened: string[] = [];
   const notes: string[] = [];
+  const alive = new Set<string>(); // slcode 의 살아 있는 세션 id
   const api = {
+    plugins: { get: (id: string) => (id === 'slcode' ? { list: async () => [...alive].map((sid) => ({ id: sid, state: 'idle', live: true })) } : undefined) },
     verbs: {
       handle: (name: string, fn: (a: Record<string, unknown>, ctx: unknown) => Promise<unknown>) => {
         assert.ok(manifest.verbs.some((v: { name: string }) => v.name === name), `${name} is declared`);
@@ -192,7 +289,7 @@ function harness({ openFails = false } = {}) {
     const rest = sub === undefined ? argv : argv.slice(1);
     return String(await handlers.get(def.name)!(parseArgs(def, rest), ctx));
   };
-  return { repo, sl, opened, notes, handlers };
+  return { repo, sl, opened, notes, handlers, ctx, alive };
 }
 
 test('Ticket trailer: 빠진 id 만 더하고, 끝 문단이 trailer 묶음이면 그 묶음에 잇는다', () => {
@@ -235,7 +332,7 @@ test('동사: ticket 만 치면 하위 동사를 한 줄씩 보이고, 모르는
   const top = manifest.verbs.find((x: { name: string }) => x.name === 'ticket');
   assert.equal(top.visibility, 'advertise');
   assert.match(top.description, /superlite ticket --help/);
-  assert.equal(subs.length, 10);
+  assert.equal(subs.length, 11);
   assert.ok(subs.every((v: { visibility?: string }) => v.visibility === 'hidden'));
   for (const v of subs) assert.match(out, new RegExp(`^superlite ticket ${v.name.slice(7)}\\s`, 'm'));
   await assert.rejects(h.sl('frobnicate'), /unexpected argument: frobnicate\nUsage: superlite ticket\n/);
@@ -270,6 +367,37 @@ test('동사: new·ls·set·log·show — log 는 이 폴더의 브랜치로 서
   assert.match(show, /## commits\n[0-9a-f]+ \d{4}-\d\d-\d\d feat: second$/);
   assert.match(await h.sl('show', a), new RegExp(`needed by:\n  ${b} \\(active\\) second one\n\n## todo\nstore 를 둔다\n[\\s\\S]*## commits\n\\(none with this Ticket: trailer\\)$`));
   await assert.rejects(h.sl('show', 'nope'), /unknown ticket: nope/);
+});
+
+test('동사: claim 은 이 브랜치와 세션을 담당에 적고 show 본문을 내며, ls 는 live 에 *·missing 에 ? 를 붙인다', async () => {
+  const h = harness();
+  const a = await h.sl('new', '--todo', 'do a', 'a');
+  h.ctx.env = { SLCODE_SESSION_ID: 'abc123' };
+  h.alive.add('abc123');
+  const claimed = await h.sl('claim', a);
+  assert.equal(claimed, await h.sl('show', a), 'show 와 같은 본문');
+  assert.match(claimed, new RegExp(`^${a}  a\nstatus active · priority normal\n`));
+  assert.match(claimed, /\nassignee: feat\/x \(live, session abc123\)\n[\s\S]*## todo\ndo a\n/);
+  assert.match(await h.sl('ls'), new RegExp(`^${a}\\s+active\\s+normal\\s+-\\s+feat/x\\*\\s+a$`));
+  // 다른 브랜치의 담당은 세션 없이 더해 둔다 — 브랜치만 보인다. 세션이 끝나면 missing
+  await h.sl('set', a, 'assignee+=feat/y');
+  h.alive.delete('abc123');
+  assert.match(await h.sl('ls'), new RegExp(`^${a}\\s+active\\s+normal\\s+-\\s+feat/x\\?,feat/y\\s+a$`));
+  assert.match(await h.sl('show', a), /\nassignee: feat\/x \(missing, session abc123\), feat\/y\n/);
+  // 세션 id 가 없는 셸(tmux 워커)의 재 claim 은 브랜치만 남긴다
+  h.ctx.env = {};
+  assert.match(await h.sl('claim', a), /\nassignee: feat\/x, feat\/y\n/);
+  // 끝난 ticket 에는 표시하지 않고, claim 은 거절한다
+  h.ctx.env = { SLCODE_SESSION_ID: 'abc123' };
+  await h.sl('claim', a);
+  await h.sl('done', a);
+  assert.match(await h.sl('show', a), /\nassignee: feat\/x, feat\/y\n/);
+  assert.match(await h.sl('ls', '--status', 'done'), /feat\/x,feat\/y/);
+  await assert.rejects(h.sl('claim', a), /is done: only an unfinished ticket can be claimed/);
+  git(h.repo, 'checkout', '-q', '--detach');
+  const b = await h.sl('new', 'b');
+  await assert.rejects(h.sl('claim', b), /records the branch of this folder/);
+  assert.equal((await h.sl('show', b)).includes('assignee'), false);
 });
 
 test('동사: done·drop·milestone — 다음 milestone 에 붙은 것과 새로 릴리스 가능해진 것을 알린다', async () => {
