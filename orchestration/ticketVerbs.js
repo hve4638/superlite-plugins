@@ -53,7 +53,13 @@ function table(rows) {
   return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? String(c) : String(c).padEnd(w[i]))).join('  ').trimEnd()).join('\n');
 }
 
-const releasedNote = (ids) => (ids.length > 0 ? [`releasable now: ${ids.map((id) => `milestone ${id}`).join(', ')}`] : []);
+/** 새로 릴리스 가능해진 milestone 의 출력 줄 — onReleased 가 있으면(main.js 가 master 세션에 알린다, 훅 A) 그 결과 줄을 덧붙인다 */
+async function releasedNote(db, ctx, ids, onReleased) {
+  if (ids.length === 0) return [];
+  const lines = [`releasable now: ${ids.map((id) => `milestone ${id}`).join(', ')}`];
+  if (onReleased) lines.push(...await onReleased(ids.map((id) => ({ id, title: store.getMilestone(db, id).title })), ctx));
+  return lines;
+}
 
 /** set 의 바꿀 칸 — key=value, key+=a,b, key-=a,b */
 const SCALAR = ['title', 'status', 'priority', 'lane'];
@@ -252,8 +258,11 @@ async function showBody(api, ctx, t) {
   return showTicket(t, live, await commitsOf(ctx.cwd, t.id));
 }
 
-/** @param {import('@superlite/plugin').MainApi} api */
-export function handleTicketVerbs(api) {
+/**
+ * @param {import('@superlite/plugin').MainApi} api
+ * @param {{ onReleased?: (milestones: { id: string, title: string }[], ctx: import('@superlite/plugin').VerbContext) => Promise<string[]> }} [opts]
+ */
+export function handleTicketVerbs(api, { onReleased } = {}) {
   // 하위 동사 목록 — plugin.json 의 선언에서 만든다. `superlite ticket --help` 는 데몬이 가로채 이 동사의 help 를 보인다
   api.verbs.handle('ticket', async () => {
     const verbs = JSON.parse(await api.folder.read('plugin.json')).verbs.filter((v) => v.name.startsWith('ticket.'));
@@ -293,19 +302,19 @@ export function handleTicketVerbs(api) {
     return showBody(api, ctx, store.getTicket(db, a.id));
   }));
 
-  api.verbs.handle('ticket.set', (a, ctx) => withStore(ctx, (db) => {
+  api.verbs.handle('ticket.set', (a, ctx) => withStore(ctx, async (db) => {
     const changes = parseChanges(a.changes ?? []);
     if (a.todo !== undefined) changes.fields.todo = a.todo;
     if (a.reason !== undefined) changes.fields.reason = a.reason;
     if (Object.keys(changes.fields).length + Object.keys(changes.add).length + Object.keys(changes.remove).length === 0) throw new Error('nothing to change: give key=value, key+=value, key-=value, --todo or --reason');
     const { attached, released } = store.updateTicket(db, a.id, changes);
-    return [`${a.id} updated`, ...(attached ? [`attached to milestone ${attached}`] : []), ...releasedNote(released)].join('\n');
+    return [`${a.id} updated`, ...(attached ? [`attached to milestone ${attached}`] : []), ...await releasedNote(db, ctx, released, onReleased)].join('\n');
   }));
 
   for (const [verb, status] of [['ticket.done', 'done'], ['ticket.drop', 'dropped']]) {
-    api.verbs.handle(verb, (a, ctx) => withStore(ctx, (db) => {
+    api.verbs.handle(verb, (a, ctx) => withStore(ctx, async (db) => {
       const { attached, released } = store.updateTicket(db, a.id, { fields: { status } });
-      return [`${a.id} ${status}`, ...(attached ? [`attached to milestone ${attached}`] : []), ...releasedNote(released)].join('\n');
+      return [`${a.id} ${status}`, ...(attached ? [`attached to milestone ${attached}`] : []), ...await releasedNote(db, ctx, released, onReleased)].join('\n');
     }));
   }
 
@@ -324,7 +333,7 @@ export function handleTicketVerbs(api) {
     return `${opened ? 'opened' : 'edit'} ${file} — each save updates ${t.id}`;
   }));
 
-  api.verbs.handle('ticket.milestone', (a, ctx) => withStore(ctx, (db) => {
+  api.verbs.handle('ticket.milestone', (a, ctx) => withStore(ctx, async (db) => {
     const args = a.args ?? [];
     const need = (n, usage) => {
       if (args.length < n) throw new Error(`usage: superlite ticket milestone ${usage}`);
@@ -348,7 +357,7 @@ export function handleTicketVerbs(api) {
         need(2, `${a.action} <id> <ticket...>`);
         const fn = a.action === 'add' ? store.addToMilestone : store.removeFromMilestone;
         const { released } = fn(db, args[0], args.slice(1));
-        return [`${a.action === 'add' ? 'added to' : 'removed from'} ${args[0]}: ${args.slice(1).join(', ')}`, ...releasedNote(released)].join('\n');
+        return [`${a.action === 'add' ? 'added to' : 'removed from'} ${args[0]}: ${args.slice(1).join(', ')}`, ...await releasedNote(db, ctx, released, onReleased)].join('\n');
       }
       case 'release':
         need(1, 'release <id>');

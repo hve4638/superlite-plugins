@@ -397,3 +397,18 @@ export function releaseMilestone(db, id) {
     db.prepare("UPDATE milestone SET status = 'released', released = ? WHERE id = ?").run(nowIso(), id);
   });
 }
+
+// ---- 대시보드 (ticket orchestration-dashboard)
+
+/** 대시보드가 한 번에 읽는 것 — ticket 전부(assignees·depends 를 붙이고 본문은 뺀다), milestone 전부(listMilestones 의 범위·진행), milestone_ticket 행(auto 포함).
+ *  읽기 트랜잭션(BEGIN)으로 한 시점의 모습을 본다 — 몇 초마다 읽으므로 쓰기 잠금(tx)을 잡지 않는다 */
+export function snapshot(db) {
+  db.exec('BEGIN');
+  try {
+    const depends = db.prepare('SELECT ticket, depends FROM ticket_depends ORDER BY depends').all();
+    const tickets = listTickets(db, { status: STATUSES }).map(({ todo, reason, ...t }) => ({ ...t, depends: depends.filter((d) => d.ticket === t.id).map((d) => d.depends) }));
+    return { tickets, milestones: listMilestones(db), links: db.prepare('SELECT milestone, ticket, auto FROM milestone_ticket ORDER BY rowid').all() };
+  } finally {
+    db.exec('COMMIT');
+  }
+}

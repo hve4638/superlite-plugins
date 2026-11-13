@@ -7,6 +7,7 @@
   "views": [
     { "id": "roles", "entry": "views/roles.js", "title": "Orchestration roles", "icon": "organization" },
     { "id": "sidebar", "entry": "views/sidebar.js", "title": "Orchestration", "icon": "organization" },
+    { "id": "dashboard", "entry": "views/dashboard.js", "title": "Tickets dashboard", "icon": "milestone" },
     { "id": "tickets", "entry": "views/tickets.js", "title": "Tickets", "icon": "checklist" }
   ],
   "depends": ["superlite-for-agents", "slcode-plugin", "slcode"],

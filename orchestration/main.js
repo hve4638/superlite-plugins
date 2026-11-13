@@ -6,6 +6,9 @@
 //   superlite ticket new|ls|show|claim|set|edit|log|done|drop|milestone|root (ticket 저장소, ticketVerbs.js·tickets.js)
 //   (ticket 동사를 친 셸의 카드에 맡은 ticket 알약을 붙인다 — ticketFloat.js, views/tickets.js)
 //
+// ticket 대시보드(views/dashboard.js, ticket orchestration-dashboard)는 expose 'tickets' 의 plan 으로 읽는다 — 그릴 모습은 milestones.js.
+// ticket 동사로 milestone 이 새로 릴리스 가능해지면 master-orchestrator 세션에 slcode.mail 로 알린다 (훅 A, lead-plugin 2026-11-09, reportReleased 주석).
+//
 // 역할과 연결선은 사용자가 탭에서 그린다(views/roles.js, storage config). 선의 뜻은 "이 역할이 저 역할을 시작할 수 있다" 하나다 (사용자 2026-11-04).
 // 권한 칸은 없다: orchestrate new 는 호출자 역할에서 나가는 선의 대상만, worker 명령은 이 브랜치에 부모 기록이 있을 때만 쓴다 — 세션 트리(실제 부모)와 역할 그래프는 별개다.
 // 검사는 동사 거절과 안내까지다. 역할이 없는 slcode 세션은 orchestrate new 를 막지 않는다. 처음 역할은 사용자가 slcode 세션에서
@@ -34,7 +37,9 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { plan } from './milestones.js';
 import { exposeTicketFloat, withTicketFloat } from './ticketFloat.js';
+import * as tickets from './tickets.js';
 import { clearTicketSessions, existingStore, handleTicketVerbs, withTicketTrailers } from './ticketVerbs.js';
 import * as worktree from './worktree.js';
 
@@ -165,6 +170,46 @@ async function callerRole(api, cfg, ctx) {
   if (!sid) return null;
   const name = await api.storage.get(`role:${sid}`);
   return cfg.roles.find((r) => r.name === name) ?? null;
+}
+
+/** milestone 을 만들고 닫는 역할 (설계 초안 5절) — 기본 역할 이름이다. 사용자가 이름을 바꾸면 찾지 못해 토스트로 알린다 */
+const MASTER = 'master-orchestrator';
+
+/** 이 동사를 부른 세션에서 부모 기록(workers[세션].parent)을 따라 올라가 처음 만나는 MASTER 역할 세션 — 없으면 null.
+ *  부른 세션은 SLCODE_SESSION_ID, 없으면(카드 밖 셸 등) 이 폴더의 브랜치를 맡은 팀원 기록으로 안다 */
+async function masterOf(api, ctx) {
+  const workers = (await api.storage.get('workers')) ?? {};
+  let sid = ctx.env.SLCODE_SESSION_ID ?? null;
+  if (sid === null) {
+    const w = await worktree.locate(ctx.cwd).catch(() => null);
+    sid = w === null ? null : Object.keys(workers).find((k) => workers[k].branch === w.branch) ?? null;
+  }
+  for (const seen = new Set(); sid && !seen.has(sid); sid = workers[sid]?.parent ?? null) {
+    seen.add(sid);
+    if ((await api.storage.get(`role:${sid}`)) === MASTER) return sid;
+  }
+  return null;
+}
+
+/** 훅 A — 새로 릴리스 가능해진 milestone 을 master 세션에 알린다. 부른 쪽이 그 master 면 동사 출력으로 충분하다.
+ *  master 를 찾지 못하거나 메일이 실패하면 그 터미널의 창에 토스트로 띄운다. 돌려주는 줄은 동사 출력에 붙는다 */
+async function reportReleased(api, ms, ctx) {
+  const text = ms.map((m) => `milestone ${m.id} "${m.title}" is releasable: every ticket in its scope is done or dropped. Release it with: superlite ticket milestone release ${m.id}`).join('\n');
+  const master = await masterOf(api, ctx);
+  if (master !== null && master === (ctx.env.SLCODE_SESSION_ID ?? null)) return [];
+  const toast = (why) => {
+    api.notify('info', text, ctx.tmux ? { tmux: ctx.tmux } : undefined);
+    return [`${why}: shown as a notification`];
+  };
+  if (master === null) return toast(`no ${MASTER} session above this one`);
+  const slcode = api.plugins.get('slcode');
+  if (typeof slcode?.mail !== 'function') return toast('the slcode plugin is older than 0.4.0');
+  try {
+    await slcode.mail({ to: master, text: `[ticket] ${text}`, from: ctx.env.SLCODE_SESSION_ID ?? undefined });
+    return [`reported to ${master} (${MASTER})`];
+  } catch (e) {
+    return toast(`not reported to ${master} (${e instanceof Error ? e.message : String(e)})`);
+  }
 }
 
 /** @type {import('@superlite/plugin').MainApi | null} */
@@ -309,8 +354,20 @@ export async function activate(api) {
     return lines.filter((l) => l !== '').join('\n');
   });
 
-  handleTicketVerbs(withTicketFloat(api));
+  handleTicketVerbs(withTicketFloat(api), { onReleased: (ms, ctx) => reportReleased(api, ms, ctx) });
   exposeTicketFloat(api);
+
+  // 대시보드 탭 — folder 는 그 탭 세션의 워크스페이스 폴더. 거기서 위로 .ticket 을 찾는다 (TICKET_PATH 는 셸의 것이라 탭에는 없다)
+  api.expose('tickets', {
+    plan: async (folder) => {
+      const db = await tickets.openStore(tickets.findStore(String(folder)).file);
+      try {
+        return plan(tickets.snapshot(db));
+      } finally {
+        db.close();
+      }
+    },
+  });
 
   // 핸들러 뒤에 — 실패해도 동사는 산다. 데몬 시작 때는 창이 없어 알림이 버려지므로 로그에 남기고, 다음 orchestrate 가 다시 시도하며 오류를 낸다
   await writeRoleNames(api, (await loadConfig(api)).roles.map((r) => r.name));
