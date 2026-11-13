@@ -4,6 +4,6 @@
     { "id": "slcode", "version": "0.5.12", "source": "github:hve4638/slcode@v0.5.12", "previous": [{ "version": "0.5.11", "ref": "v0.5.11", "depends": [] }, { "version": "0.5.10", "ref": "v0.5.10", "depends": [] }, { "version": "0.5.9", "ref": "v0.5.9", "depends": [] }, { "version": "0.5.8", "ref": "v0.5.8", "depends": [] }] },
     { "id": "slcode-plugin", "version": "0.6.1", "path": "slcode-plugin", "previous": [{ "version": "0.6.0", "ref": "slcode-plugin-v0.6.0", "depends": [] }] },
     { "id": "superlite-for-agents", "version": "0.5.0", "path": "superlite-for-agents", "depends": ["slcode-plugin"] },
-    { "id": "orchestration", "version": "0.5.3", "path": "orchestration", "depends": ["superlite-for-agents", "slcode-plugin", "slcode"] }
+    { "id": "orchestration", "version": "0.6.0", "path": "orchestration", "minSuperlite": "0.22.0", "depends": ["superlite-for-agents", "slcode-plugin", "slcode>=0.5.12"], "previous": [{ "version": "0.5.3", "ref": "orchestration-v0.5.3", "depends": ["superlite-for-agents", "slcode-plugin", "slcode"] }] }
   ]
 }

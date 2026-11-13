@@ -1,6 +1,6 @@
 {
   "id": "orchestration",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "apiVersion": 2,
   "main": "main.js",
   "renderer": "renderer.js",
@@ -10,7 +10,7 @@
     { "id": "dashboard", "entry": "views/dashboard.js", "title": "Tickets dashboard", "icon": "milestone" },
     { "id": "tickets", "entry": "views/tickets.js", "title": "Tickets", "icon": "checklist" }
   ],
-  "depends": ["superlite-for-agents", "slcode-plugin", "slcode"],
+  "depends": ["superlite-for-agents", "slcode-plugin", "slcode>=0.5.12"],
   "env": ["SLCODE_SESSION_ID", "TICKET_PATH"],
   "verbs": [
     {
